@@ -1,0 +1,11 @@
+{{define "content"}}
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<form method="post" action="/reset">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <label>Username or email
+    <input type="text" name="email" autocomplete="username" required autofocus>
+  </label>
+  <button type="submit">Send reset link</button>
+  <p><a href="/login">Back to login</a></p>
+</form>
+{{end}}

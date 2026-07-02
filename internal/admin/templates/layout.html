@@ -1,0 +1,67 @@
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} - DeclarativeAuth Admin</title>
+  <style>
+    :root {
+      --bg: #f4f5f7;
+      --card-bg: #fff;
+      --text: #1f2933;
+      --border: #d1d5db;
+      --link: #2563eb;
+      --button-bg: #2563eb;
+      --button-text: #fff;
+      --error: #b91c1c;
+      --success: #15803d;
+      --node-fill: #dbeafe;
+      --node-stroke: #2563eb;
+      --edge-stroke: #94a3b8;
+    }
+    /* Follows the OS/browser "prefers-color-scheme" setting automatically --
+       no toggle, no JS, no stored preference. */
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111827;
+        --card-bg: #1f2937;
+        --text: #e5e7eb;
+        --border: #374151;
+        --link: #60a5fa;
+        --button-bg: #2563eb;
+        --button-text: #fff;
+        --error: #f87171;
+        --success: #4ade80;
+        --node-fill: #1e3a5f;
+        --node-stroke: #60a5fa;
+        --edge-stroke: #6b7280;
+      }
+    }
+    body { font-family: system-ui, sans-serif; margin: 2rem; background: var(--bg); color: var(--text); }
+    nav a { margin-right: 1rem; }
+    a { color: var(--link); }
+    .card { background: var(--card-bg); border-radius: 8px; box-shadow: 0 1px 4px rgba(0,0,0,0.1); padding: 1.5rem; max-width: 900px; }
+    .error { color: var(--error); } .success { color: var(--success); }
+    input, textarea { width: 100%; box-sizing: border-box; padding: 0.5rem; font-family: monospace; background: var(--card-bg); color: var(--text); border: 1px solid var(--border); border-radius: 4px; }
+    textarea { min-height: 320px; }
+    button { padding: 0.5rem 1rem; background: var(--button-bg); color: var(--button-text); border: none; border-radius: 4px; cursor: pointer; }
+    .group-node { fill: var(--node-fill); stroke: var(--node-stroke); }
+    .group-edge { stroke: var(--edge-stroke); stroke-width: 1.5; marker-end: url(#arrow); }
+    .group-edge-arrow { fill: var(--edge-stroke); }
+    .group-label { font-size: 12px; font-family: system-ui, sans-serif; fill: var(--text); }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="/admin">Dashboard</a>
+    <a href="/admin/smtp-test">SMTP test</a>
+    <a href="/admin/graph">Group graph</a>
+    {{if .ConfigEditorEnabled}}<a href="/admin/config/users">Config editor</a>{{end}}
+    <a href="/login">Back to app</a>
+  </nav>
+  <h1>{{.Title}}</h1>
+  {{template "content" .}}
+  <script src="/static/secure-guard.js"></script>
+</body>
+</html>
+{{end}}

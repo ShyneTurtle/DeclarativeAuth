@@ -1,0 +1,51 @@
+# Declarative users. This file declares WHO exists and WHICH groups they
+# directly belong to -- see groups.yaml for how group membership then
+# recursively expands (e.g. jsmith below ends up in backend-team, oncall,
+# AND engineering, despite only "oncall" and "backend-team" being listed
+# here directly).
+#
+# No password lives in this file, ever -- credentials are stored (as
+# Argon2id hashes) in Postgres, set separately via:
+#   declarativeauth admin set-password -username <user> -password <pw> ...
+# or by an admin sending a self-service setup link from the admin UI.
+#
+# This file is hot-reloaded, same as groups.yaml -- no restart needed after
+# an edit. Run `declarativeauth validate-config` to catch mistakes (e.g. a
+# `memberOfGroups` entry that doesn't match any declared group) before
+# deploying.
+#
+# Field reference:
+#   username        (required) unique login name, used for LDAP bind (uid=...) and OIDC.
+#   email           (required for password-reset/setup emails and admin-UI email lookup)
+#   firstName, name  optional "given name" / "surname" -- combined into the LDAP cn /
+#                     OIDC "name" claim as "firstName name" when displayName isn't set.
+#   displayName      optional explicit override for the combined firstName+name (see jsmith vs admin below).
+#   enabled          (required) false = account still exists (kept for audit/history) but cannot log in.
+#   memberOfGroups   direct group memberships; must reference names declared in groups.yaml.
+
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    email: jsmith@example.com
+    firstName: "Jane"
+    name: "Smith"          # No displayName set -> LDAP cn / OIDC name become "Jane Smith" automatically.
+    enabled: true
+    memberOfGroups:
+      - backend-team
+      - oncall              # Directly in "oncall" AND "backend-team" is redundant but harmless --
+                             # oncall already implies backend-team via the diamond in groups.yaml.
+
+  - username: admin
+    email: admin@example.com
+    displayName: "System Admin"   # Explicit override -- shown as-is instead of deriving from firstName/name.
+    enabled: true
+    memberOfGroups:
+      - admins                     # Member of "admins" -> can reach the admin UI (adminUI.adminGroup in declarativeauth.yaml).
+
+  - username: contractor1
+    email: contractor1@example.com
+    displayName: "Temp Contractor"
+    enabled: false          # Disabled: the account and its group memberships stay declared, but login is refused.
+    memberOfGroups:
+      - platform-team

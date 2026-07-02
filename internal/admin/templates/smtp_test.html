@@ -1,0 +1,14 @@
+{{define "content"}}
+<div class="card">
+  {{if .Result}}<p class="success">{{.Result}}</p>{{end}}
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  <form method="post" action="/admin/smtp-test">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <label>Send a test email to:
+      <input type="email" name="to" required>
+    </label>
+    <br><br>
+    <button type="submit">Send test email</button>
+  </form>
+</div>
+{{end}}

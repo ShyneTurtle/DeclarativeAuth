@@ -1,0 +1,21 @@
+# Build output
+/declarativeauth
+/bin/
+*.exe
+*.test
+
+# Go
+/vendor/
+
+# Local env / secrets
+.env
+*.local.yaml
+
+# Editor/OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Claude Code local session state (not part of the project)
+.claude/

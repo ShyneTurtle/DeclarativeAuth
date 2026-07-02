@@ -1,0 +1,152 @@
+# Example server configuration for DeclarativeAuth, meant to be run with
+# `declarativeauth serve -config declarativeauth.yaml`.
+#
+# This file controls *how the server runs* (listeners, database, SMTP, rate
+# limiting, TLS, admin UI). It is separate from the *who exists* files
+# (users.yaml / groups.yaml, see configs/example/users.yaml) which live under
+# `config.identityPath` below and are hot-reloaded independently, without
+# needing this file to change or the server to restart.
+#
+# Any `${VAR}` in a string value is replaced with the environment variable
+# VAR at load time -- use this for secrets (e.g. the DB password below).
+# The `...Env` fields (e.g. `smtp.passwordEnv`) instead name an environment
+# variable to read a secret from directly. Either way, no secret is ever
+# written literally into this file. The one exception is the Argon2id
+# password pepper: it's not configurable at all, always read from the fixed
+# DECLARATIVEAUTH_PASSWORD_PEPPER environment variable -- see "Secrets" below.
+#
+# Every field below is optional unless marked (required); omitted optional
+# fields fall back to the default shown, applied by Defaults() in
+# internal/config/types.go.
+
+logging:
+  level: info    # debug | info | warn | error. Default: info.
+  format: json   # json | text. Default: json. Use "text" for readable local-dev logs.
+
+database:
+  # (required) Postgres connection string. Postgres is DeclarativeAuth's only
+  # stateful dependency: it stores password hashes, sessions, password-reset
+  # tokens, audit log, and brute-force lockout counters. It does NOT store
+  # users/groups -- that's what users.yaml/groups.yaml are for.
+  dsn: "postgres://declarativeauth:${DB_PASSWORD}@localhost:5432/declarativeauth?sslmode=disable"
+  maxConns: 10        # Connection pool size. Default: 10.
+  connectTimeout: 5s   # Default: 5s.
+
+# Secrets: the DB password above is interpolated via ${DB_PASSWORD}. The
+# Argon2id "pepper" -- a server-side secret mixed into every password hash
+# (via HMAC-SHA256, on top of each password's own random salt) before it's
+# hashed -- works differently: it always comes from a single fixed
+# environment variable, DECLARATIVEAUTH_PASSWORD_PEPPER, with no config
+# field to point it elsewhere. (required at runtime; not set here)
+# Generate a value with: openssl rand -base64 32
+
+passwordPolicy:
+  # Enforced whenever a user sets their own password, on the password
+  # reset / first-password-setup page (the `admin set-password` CLI
+  # bypasses this -- it's a bootstrap/testing escape hatch).
+  minLength: 8      # Minimum character count. Default: 8.
+  # Minimum required strength, 0-4 (0=very weak, 1=weak, 2=fair, 3=good,
+  # 4=strong), estimated from the password's length and character-class
+  # diversity -- the same scale shown by the live strength bar on the
+  # set-password page. Default: 2 ("fair").
+  minStrength: 3
+
+ldap:
+  listenAddr: "0.0.0.0:389"    # Default: "0.0.0.0:389". Use :636 if this listener terminates LDAPS itself (see ldap.tls below).
+  baseDN: "dc=example,dc=com"   # Default: "dc=example,dc=com". Users appear as uid=<username>,ou=users,<baseDN>; groups as cn=<name>,ou=groups,<baseDN>.
+  allowAnonymousBind: false      # Default: false. Leave false unless you specifically need unauthenticated LDAP search.
+  tls:
+    enabled: false   # true = DeclarativeAuth terminates LDAPS itself on listenAddr. false = plain LDAP; put a TLS-terminating proxy in front instead (see README's TLS section).
+    # certFile/keyFile: optional here -- if omitted while enabled: true, the
+    # shared certFile/keyFile from the top-level `tls:` block below is used,
+    # falling back further to a self-signed cert if that's also unset.
+
+oidc:
+  issuer: "http://localhost:8080"   # (required) Must exactly match the externally-visible base URL clients use; it's embedded in issued tokens and the discovery document.
+  listenAddr: "0.0.0.0:8080"         # Serves OIDC endpoints, the login/reset web pages, and the admin UI, all on one HTTP(S) listener. Default: "0.0.0.0:8080".
+  tls:
+    enabled: false   # true = DeclarativeAuth terminates HTTPS itself on listenAddr. false = plain HTTP; put a TLS-terminating reverse proxy in front instead.
+  clients:
+    # Statically declared OIDC relying parties -- there is no dynamic client
+    # registration. Add one entry per application that should be able to log
+    # users in via DeclarativeAuth's /authorize and /token endpoints.
+    - clientID: example-client
+      redirectURIs:
+        - "http://localhost:9000/callback"
+      public: true   # true = public client (SPA/mobile; PKCE required, no secret). false = confidential client -- also set clientSecret below.
+      # clientSecret: "${EXAMPLE_CLIENT_SECRET}"   # required when public: false
+
+smtp:
+  # Used to send password-reset and account-setup emails. This example
+  # points at port 1025 with no auth, matching a local mailcatcher/MailHog
+  # instance for development -- point it at a real relay in production (see
+  # deploy/k8s/configmap-identity.yaml for a production-shaped example).
+  host: localhost                 # (required)
+  port: 1025                       # (required) Typically 587 (STARTTLS), 465 (implicit TLS), or 25.
+  username: ""                      # Leave blank for relays that don't require auth.
+  passwordEnv: "SMTP_PASSWORD"       # Name of the env var holding the SMTP password. Leave the referenced env var unset if username is blank.
+  from: "DeclarativeAuth <notifications@example.com>"   # (required) "From" header on outgoing mail.
+
+metrics:
+  listenAddr: "0.0.0.0:9090"   # Prometheus metrics served at /metrics on this address. Default: "0.0.0.0:9090".
+
+config:
+  # (required) Directory containing users.yaml/groups.yaml (or the split
+  # form users.d/*.yaml, groups.d/*.yaml). Changes under this path are
+  # picked up automatically via a filesystem watcher -- no restart needed.
+  identityPath: /etc/declarativeauth/identity
+  reloadDebounce: 500ms   # Delay after a file-change event before reloading, to coalesce rapid successive writes (e.g. an editor's save-as-temp-then-rename). Default: 500ms.
+
+network:
+  # CIDR ranges of reverse proxies/load balancers you trust to report the
+  # real client IP/scheme via X-Forwarded-For / X-Forwarded-Proto. Only the
+  # immediate TCP peer is checked against this list -- if it matches, those
+  # headers are trusted for rate-limiting/audit-logging IPs and for
+  # detecting HTTPS termination upstream. Leave empty (default) if you don't
+  # need any additional proxies trusted beyond the default gateway below.
+  trustedProxies: []
+  # trustedProxies: ["10.0.0.0/8"]
+
+  # When true (the default), the process's own default gateway is also
+  # trusted, on top of trustedProxies above. In Docker/Kubernetes this is
+  # typically the bridge/overlay network gateway -- the address a
+  # host-level reverse proxy or sidecar talks to the container through --
+  # so forwarded headers work out of the box without hardcoding a
+  # Docker-assigned address that can differ per host or restart. Set to
+  # false if DeclarativeAuth is reachable directly with no proxy in front,
+  # to avoid trusting forwarded headers from something on the same host/network.
+  trustDefaultGateway: true
+
+rateLimit:
+  # Brute-force login backoff: persisted in Postgres and shared across LDAP
+  # bind attempts and OIDC/web login attempts, keyed by both username and
+  # source IP. After `threshold` failed attempts, each further attempt is
+  # delayed, doubling from `backoffBase` up to `backoffMax`, until `window`
+  # has elapsed since the last failure (which resets the counter).
+  threshold: 5      # Failed attempts allowed before backoff kicks in. Default: 5.
+  backoffBase: 1s    # Delay applied to the first attempt once over threshold. Default: 1s.
+  backoffMax: 15m     # Delay cap, no matter how many further attempts happen. Default: 15m.
+  window: 24h          # How long without a failed attempt before the counter resets. Default: 24h.
+
+adminUI:
+  enabled: true         # Serves a small gated page under /admin: SMTP test, group-inheritance graph, and optionally a config editor (see below). Default: true.
+  adminGroup: admins     # Members of this declarative group (defined in groups.yaml) can reach /admin. Default: "admins".
+  configEditor:
+    # Lets an admin edit and save users.yaml/groups.yaml straight from the
+    # browser, with live validation before saving. Only turn this on for a
+    # single-instance deployment writing to local disk. On a multi-node or
+    # GitOps-managed deployment (e.g. a Kubernetes ConfigMap, see
+    # deploy/k8s/configmap-identity.yaml), leave this false -- a save here
+    # wouldn't propagate to other replicas -- and edit the declarative files
+    # through your normal deployment pipeline instead.
+    enabled: false   # Default: false.
+
+# Optional shared TLS certificate, used as the fallback cert/key pair for
+# any listener above that has `tls.enabled: true` but no cert/key of its
+# own. If a listener needs TLS and neither this nor a listener-specific
+# cert/key is set, a self-signed, dev-only certificate is generated instead
+# (a warning is logged when that happens -- don't rely on it in production).
+# tls:
+#   certFile: /etc/declarativeauth/tls/tls.crt
+#   keyFile: /etc/declarativeauth/tls/tls.key
+#   minVersion: "1.2"   # "1.2" or "1.3". Default: "1.2".

@@ -1,0 +1,20 @@
+{{define "content"}}
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<form method="post" action="/reset/confirm" id="set-password-form">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <input type="hidden" name="token" value="{{.Token}}">
+  <label>New password
+    <input type="password" name="password" id="password" autocomplete="new-password" required minlength="{{.MinLength}}">
+  </label>
+  <div class="strength-meter" aria-hidden="true">
+    <div class="strength-meter-bar" id="strength-bar"></div>
+  </div>
+  <p class="strength-label" id="strength-label">&nbsp;</p>
+  <label>Confirm new password
+    <input type="password" name="password_confirm" id="password_confirm" autocomplete="new-password" required minlength="{{.MinLength}}">
+  </label>
+  <p class="error" id="confirm-mismatch" hidden>Passwords do not match.</p>
+  <button type="submit">Set password</button>
+</form>
+<script src="/static/strength.js" data-min-strength="{{.MinStrength}}"></script>
+{{end}}

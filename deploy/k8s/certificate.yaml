@@ -1,0 +1,14 @@
+# Example cert-manager Certificate producing the Secret DeclarativeAuth
+# mounts at /etc/declarativeauth/tls for both HTTPS (OIDC/web) and LDAPS,
+# since both share one certificate pair by default (Section 9b of the plan).
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: declarativeauth-tls
+spec:
+  secretName: declarativeauth-tls
+  dnsNames:
+    - auth.example.com
+  issuerRef:
+    name: letsencrypt-prod # or an internal-CA ClusterIssuer
+    kind: ClusterIssuer

@@ -1,0 +1,22 @@
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: engineering
+    description: "All engineering staff"
+    memberOfGroups: []
+  - name: backend-team
+    description: "Backend engineers"
+    memberOfGroups:
+      - engineering
+  - name: platform-team
+    description: "Platform/infra engineers"
+    memberOfGroups:
+      - engineering
+  - name: oncall
+    description: "On-call rotation, cross-functional"
+    memberOfGroups:
+      - backend-team
+      - platform-team
+  - name: admins
+    description: "DeclarativeAuth administrators"
+    memberOfGroups: []

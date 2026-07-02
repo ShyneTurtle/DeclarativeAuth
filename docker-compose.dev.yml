@@ -1,0 +1,36 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile.dev
+    volumes:
+      - .:/workspace
+      - go-mod-cache:/go/pkg/mod
+      - go-build-cache:/root/.cache/go-build
+    working_dir: /workspace
+    command: sleep infinity
+    environment:
+      - DATABASE_URL=postgres://declarativeauth:declarativeauth@postgres:5432/declarativeauth?sslmode=disable
+      - CGO_ENABLED=0
+    depends_on:
+      - postgres
+      - mailcatcher
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=declarativeauth
+      - POSTGRES_PASSWORD=declarativeauth
+      - POSTGRES_DB=declarativeauth
+    ports:
+      - "15432:5432"
+
+  mailcatcher:
+    image: sj26/mailcatcher
+    ports:
+      - "11080:1080"
+      - "11025:1025"
+
+volumes:
+  go-mod-cache:
+  go-build-cache:

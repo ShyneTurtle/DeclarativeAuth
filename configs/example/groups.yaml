@@ -1,0 +1,50 @@
+# Declarative groups. Each group can itself be a member of parent groups
+# via `memberOfGroups`, and membership is recursive: a user in "oncall"
+# below is transitively also a member of "backend-team", "platform-team",
+# AND "engineering" -- DeclarativeAuth resolves ("flattens") this chain for
+# you, so LDAP/OIDC clients never have to walk the group graph themselves.
+#
+# This file is hot-reloaded: edit it and the change applies within
+# `config.reloadDebounce` (see declarativeauth.yaml), no restart needed.
+# Run `declarativeauth validate-config` to check this file (and users.yaml)
+# for mistakes -- like a typo'd group name, or a cycle -- before deploying.
+#
+# The example below forms a diamond, to demonstrate that inheriting the
+# same ancestor group through two different paths is fine and only counts
+# once:
+#
+#             engineering
+#              /        \
+#     backend-team   platform-team
+#              \        /
+#               oncall
+#
+# A user who is only declared as a member of "oncall" (see users.yaml)
+# ends up flattened to: [oncall, backend-team, platform-team, engineering]
+
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: engineering
+    description: "All engineering staff"
+    memberOfGroups: []   # Top of the hierarchy: not a member of any other group.
+
+  - name: backend-team
+    description: "Backend engineers"
+    memberOfGroups:
+      - engineering       # Every backend-team member is transitively in engineering too.
+
+  - name: platform-team
+    description: "Platform/infra engineers"
+    memberOfGroups:
+      - engineering
+
+  - name: oncall
+    description: "On-call rotation, cross-functional"
+    memberOfGroups:
+      - backend-team       # oncall inherits from BOTH parents -- the diamond above --
+      - platform-team       # and still only appears once in a member's flattened group list.
+
+  - name: admins
+    description: "DeclarativeAuth administrators -- gates access to the admin UI (see adminUI.adminGroup in declarativeauth.yaml)"
+    memberOfGroups: []

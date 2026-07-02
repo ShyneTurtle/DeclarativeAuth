@@ -1,0 +1,42 @@
+{{define "content"}}
+<div class="card">
+  <p>Editing <strong>{{.FileName}}</strong>. Changes are validated live and only written to disk on Save
+     (which triggers the normal hot-reload watcher, same as any other file write).</p>
+  <p>
+    <a href="/admin/config/users">users.yaml</a> |
+    <a href="/admin/config/groups">groups.yaml</a> |
+    <a href="/admin/config/{{.FileKey}}/download">Download</a>
+  </p>
+  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+  {{if .Success}}<p class="success">Saved.</p>{{end}}
+  <form method="post" action="/admin/config/{{.FileKey}}/save" id="editor-form">
+    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+    <textarea name="content" id="content">{{.Content}}</textarea>
+    <p id="validation-status"></p>
+    <button type="submit">Save</button>
+  </form>
+  <script>
+    // Minimal live-validation: debounced POST to /admin/config/validate as
+    // the operator types. No editor framework is vendored (kept lightweight);
+    // this is a plain textarea with server-side validation feedback.
+    const textarea = document.getElementById('content');
+    const status = document.getElementById('validation-status');
+    const fileKey = {{.FileKeyJS}};
+    let timer;
+    textarea.addEventListener('input', () => {
+      clearTimeout(timer);
+      timer = setTimeout(async () => {
+        const resp = await fetch('/admin/config/validate', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: 'fileKey=' + encodeURIComponent(fileKey) + '&content=' + encodeURIComponent(textarea.value)
+                + '&csrf_token=' + encodeURIComponent({{.CSRFTokenJS}})
+        });
+        const data = await resp.json();
+        status.textContent = data.valid ? 'Valid.' : ('Invalid: ' + data.error);
+        status.className = data.valid ? 'success' : 'error';
+      }, 400);
+    });
+  </script>
+</div>
+{{end}}

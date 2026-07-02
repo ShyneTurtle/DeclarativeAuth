@@ -1,0 +1,27 @@
+# Example CloudNativePG Cluster resource. Requires the CNPG operator
+# installed in the cluster. Produces the `declarativeauth-db-rw` service
+# (read-write primary routing) that declarativeauth.yaml's database.dsn
+# targets.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: declarativeauth-db
+spec:
+  instances: 3
+  storage:
+    size: 5Gi
+  bootstrap:
+    initdb:
+      database: declarativeauth
+      owner: declarativeauth
+      secret:
+        name: declarativeauth-db-app-secret
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: declarativeauth-db-app-secret
+type: kubernetes.io/basic-auth
+stringData:
+  username: declarativeauth
+  password: changeme

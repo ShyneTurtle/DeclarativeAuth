@@ -1,0 +1,12 @@
+FROM golang:1.25-bookworm
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ldap-utils \
+    git \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN go install honnef.co/go/tools/cmd/staticcheck@latest \
+    && go install github.com/pressly/goose/v3/cmd/goose@latest
+
+WORKDIR /workspace

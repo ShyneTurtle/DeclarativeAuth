@@ -1,0 +1,7 @@
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    email: jsmith@example.com
+    memberOfGroups:
+      - backend-team

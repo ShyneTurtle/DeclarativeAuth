@@ -1,0 +1,9 @@
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: backend-team
+    memberOfGroups:
+      - engineering
+  - name: engineering
+    memberOfGroups:
+      - backend-team

@@ -1,0 +1,22 @@
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    email: jsmith@example.com
+    displayName: "Jane Smith"
+    enabled: true
+    memberOfGroups:
+      - backend-team
+      - oncall
+  - username: admin
+    email: admin@example.com
+    displayName: "System Admin"
+    enabled: true
+    memberOfGroups:
+      - admins
+  - username: contractor1
+    email: contractor1@example.com
+    displayName: "Temp Contractor"
+    enabled: false
+    memberOfGroups:
+      - platform-team

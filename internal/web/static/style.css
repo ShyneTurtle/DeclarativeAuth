@@ -1,0 +1,86 @@
+:root {
+  --bg: #f4f5f7;
+  --card-bg: #fff;
+  --text: #1f2933;
+  --muted: #6b7280;
+  --border: #d1d5db;
+  --link: #2563eb;
+  --button-bg: #2563eb;
+  --button-bg-hover: #1d4ed8;
+  --button-text: #fff;
+  --error: #b91c1c;
+  --meter-track: #e5e7eb;
+}
+
+/* Follows the OS/browser "prefers-color-scheme" setting automatically --
+   no toggle, no JS, no stored preference: whatever the device already says
+   is what it gets. */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111827;
+    --card-bg: #1f2937;
+    --text: #e5e7eb;
+    --muted: #9ca3af;
+    --border: #374151;
+    --link: #60a5fa;
+    --button-bg: #2563eb;
+    --button-bg-hover: #3b82f6;
+    --button-text: #fff;
+    --error: #f87171;
+    --meter-track: #374151;
+  }
+}
+
+body {
+  font-family: system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  display: flex;
+  justify-content: center;
+  padding-top: 10vh;
+}
+.card {
+  background: var(--card-bg);
+  border-radius: 8px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  padding: 2rem;
+  width: 320px;
+}
+h1 { font-size: 1.25rem; margin-top: 0; }
+label { display: block; margin-bottom: 1rem; font-size: 0.9rem; }
+input {
+  display: block;
+  width: 100%;
+  padding: 0.5rem;
+  margin-top: 0.25rem;
+  box-sizing: border-box;
+  background: var(--card-bg);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+button { width: 100%; padding: 0.6rem; background: var(--button-bg); color: var(--button-text); border: none; border-radius: 4px; cursor: pointer; }
+button:hover { background: var(--button-bg-hover); }
+.error { color: var(--error); font-size: 0.9rem; }
+a { color: var(--link); }
+
+.strength-meter {
+  height: 6px;
+  background: var(--meter-track);
+  border-radius: 3px;
+  margin-top: -0.5rem;
+  margin-bottom: 0.25rem;
+  overflow: hidden;
+}
+.strength-meter-bar {
+  height: 100%;
+  width: 0;
+  background: var(--meter-track);
+  transition: width 0.15s ease, background 0.15s ease;
+}
+.strength-label {
+  font-size: 0.8rem;
+  color: var(--muted);
+  margin: 0 0 1rem;
+  min-height: 1em;
+}

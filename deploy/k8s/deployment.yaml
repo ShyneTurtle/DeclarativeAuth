@@ -1,0 +1,67 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: declarativeauth
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: declarativeauth
+  template:
+    metadata:
+      labels:
+        app: declarativeauth
+    spec:
+      containers:
+        - name: declarativeauth
+          image: ghcr.io/shyneturtle/declarativeauth:latest
+          args: ["serve", "-config", "/etc/declarativeauth/config/declarativeauth.yaml"]
+          ports:
+            - name: ldaps
+              containerPort: 636
+            - name: https
+              containerPort: 8443
+            - name: metrics
+              containerPort: 9090
+          env:
+            - name: DB_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: declarativeauth-secrets, key: DB_PASSWORD }
+            - name: SMTP_PASSWORD
+              valueFrom:
+                secretKeyRef: { name: declarativeauth-secrets, key: SMTP_PASSWORD }
+            - name: DECLARATIVEAUTH_PASSWORD_PEPPER
+              valueFrom:
+                secretKeyRef: { name: declarativeauth-secrets, key: DECLARATIVEAUTH_PASSWORD_PEPPER }
+          volumeMounts:
+            - name: identity
+              mountPath: /etc/declarativeauth/identity
+              readOnly: true
+            - name: config
+              mountPath: /etc/declarativeauth/config
+              readOnly: true
+            - name: tls
+              mountPath: /etc/declarativeauth/tls
+              readOnly: true
+          readinessProbe:
+            httpGet: { path: /readyz, port: https, scheme: HTTPS }
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /healthz, port: https, scheme: HTTPS }
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          resources:
+            requests:
+              memory: 64Mi
+              cpu: 50m
+            limits:
+              memory: 100Mi
+              cpu: 250m
+      volumes:
+        - name: identity
+          configMap: { name: declarativeauth-identity }
+        - name: config
+          configMap: { name: declarativeauth-config }
+        - name: tls
+          secret: { secretName: declarativeauth-tls }
