@@ -2,10 +2,11 @@
 {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
 <form method="post" action="/reset">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <input type="hidden" name="return_to" value="{{.ReturnTo}}">
   <label>Username or email
     <input type="text" name="email" autocomplete="username" required autofocus>
   </label>
   <button type="submit">Send reset link</button>
-  <p><a href="/login">Back to login</a></p>
+  <p><a href="/login?return_to={{.ReturnTo}}">Back to login</a></p>
 </form>
 {{end}}

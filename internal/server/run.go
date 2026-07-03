@@ -161,6 +161,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Mail:     mailClient,
 			Hasher:   hasher,
 			Audit:    auditStore,
+			Sessions: sessions,
 			BaseURL:  cfg.OIDC.Issuer,
 			Policy: auth.PasswordPolicy{
 				MinLength:   cfg.PasswordPolicy.MinLength,

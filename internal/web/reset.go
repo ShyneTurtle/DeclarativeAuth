@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -24,6 +25,7 @@ type ResetHandlers struct {
 	Mail     *mail.Client
 	Hasher   *auth.Hasher
 	Audit    *store.AuditStore
+	Sessions *SessionManager // used to auto-log-in immediately after a successful reset, see handleResetConfirmSubmit
 	TTL      time.Duration
 	BaseURL  string // e.g. "https://auth.example.com", used to build the emailed link
 	Policy   auth.PasswordPolicy
@@ -105,8 +107,9 @@ func (h *ResetHandlers) handleReset(w http.ResponseWriter, r *http.Request, tp *
 	secure := tp.IsForwardedHTTPS(r)
 	switch r.Method {
 	case http.MethodGet:
+		returnTo := sanitizeReturnTo(r.URL.Query().Get("return_to"))
 		token := IssueCSRFToken(w, r, secure)
-		render(w, resetRequestTmpl, map[string]any{"Title": "Reset password", "CSRFToken": token})
+		render(w, resetRequestTmpl, map[string]any{"Title": "Reset password", "CSRFToken": token, "ReturnTo": returnTo})
 	case http.MethodPost:
 		h.handleResetSubmit(w, r, secure)
 	default:
@@ -115,8 +118,9 @@ func (h *ResetHandlers) handleReset(w http.ResponseWriter, r *http.Request, tp *
 }
 
 func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request, secure bool) {
+	returnTo := sanitizeReturnTo(r.FormValue("return_to"))
 	if !ValidCSRF(r) {
-		render(w, resetRequestTmpl, map[string]any{"Title": "Reset password", "Error": "Your session expired, please try again.", "CSRFToken": IssueCSRFToken(w, r, secure)})
+		render(w, resetRequestTmpl, map[string]any{"Title": "Reset password", "Error": "Your session expired, please try again.", "CSRFToken": IssueCSRFToken(w, r, secure), "ReturnTo": returnTo})
 		return
 	}
 	// Accepts either a username or an email, resolved the same way login
@@ -133,6 +137,12 @@ func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request
 		tokenHash := hashToken(raw)
 		if err := h.Tokens.Create(ctx, tokenHash, username, h.ttl()); err == nil {
 			link := h.BaseURL + "/reset/confirm?token=" + raw
+			// Carries the original destination through the email link, so
+			// completing the reset can land the user back where they were
+			// headed instead of a bare, context-less /login.
+			if returnTo != "" && returnTo != "/" {
+				link += "&return_to=" + url.QueryEscape(returnTo)
+			}
 			// The link always goes to the user's declared email, never to
 			// whatever the requester typed -- so typing a username still
 			// sends the link to its owner's real address, not nowhere.
@@ -144,7 +154,7 @@ func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request
 	}
 	// Always the same response, regardless of whether the identifier
 	// matched, to avoid user enumeration.
-	render(w, resetSentTmpl, map[string]any{"Title": "Check your email", "ExpiresIn": humanDuration(h.ttl())})
+	render(w, resetSentTmpl, map[string]any{"Title": "Check your email", "ExpiresIn": humanDuration(h.ttl()), "ReturnTo": returnTo})
 }
 
 func (h *ResetHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Request, tp *auth.TrustedProxies) {
@@ -156,10 +166,11 @@ func (h *ResetHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Reques
 			render(w, errorTmpl, errorPageData{Title: "Invalid link", Message: "This link is invalid or has expired."})
 			return
 		}
+		returnTo := sanitizeReturnTo(r.URL.Query().Get("return_to"))
 		csrf := IssueCSRFToken(w, r, secure)
-		render(w, resetConfirmTmpl, h.confirmPageData(token, csrf, ""))
+		render(w, resetConfirmTmpl, h.confirmPageData(token, returnTo, csrf, ""))
 	case http.MethodPost:
-		h.handleResetConfirmSubmit(w, r, secure)
+		h.handleResetConfirmSubmit(w, r, secure, tp)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
@@ -180,11 +191,12 @@ func (h *ResetHandlers) policy() auth.PasswordPolicy {
 	return p
 }
 
-func (h *ResetHandlers) confirmPageData(token, csrf, errMsg string) map[string]any {
+func (h *ResetHandlers) confirmPageData(token, returnTo, csrf, errMsg string) map[string]any {
 	p := h.policy()
 	data := map[string]any{
 		"Title":       "Set your password",
 		"Token":       token,
+		"ReturnTo":    returnTo,
 		"CSRFToken":   csrf,
 		"MinLength":   p.MinLength,
 		"MinStrength": p.MinStrength,
@@ -195,8 +207,9 @@ func (h *ResetHandlers) confirmPageData(token, csrf, errMsg string) map[string]a
 	return data
 }
 
-func (h *ResetHandlers) handleResetConfirmSubmit(w http.ResponseWriter, r *http.Request, secure bool) {
+func (h *ResetHandlers) handleResetConfirmSubmit(w http.ResponseWriter, r *http.Request, secure bool, tp *auth.TrustedProxies) {
 	token := r.FormValue("token")
+	returnTo := sanitizeReturnTo(r.FormValue("return_to"))
 	if !ValidCSRF(r) {
 		render(w, errorTmpl, errorPageData{Title: "Invalid link", Message: "Your session expired, please request a new link."})
 		return
@@ -205,12 +218,12 @@ func (h *ResetHandlers) handleResetConfirmSubmit(w http.ResponseWriter, r *http.
 	confirm := r.FormValue("password_confirm")
 	if password != confirm {
 		csrf := IssueCSRFToken(w, r, secure)
-		render(w, resetConfirmTmpl, h.confirmPageData(token, csrf, "Passwords do not match."))
+		render(w, resetConfirmTmpl, h.confirmPageData(token, returnTo, csrf, "Passwords do not match."))
 		return
 	}
 	if err := h.policy().Validate(password); err != nil {
 		csrf := IssueCSRFToken(w, r, secure)
-		render(w, resetConfirmTmpl, h.confirmPageData(token, csrf, capitalize(err.Error())+"."))
+		render(w, resetConfirmTmpl, h.confirmPageData(token, returnTo, csrf, capitalize(err.Error())+"."))
 		return
 	}
 
@@ -236,7 +249,21 @@ func (h *ResetHandlers) handleResetConfirmSubmit(w http.ResponseWriter, r *http.
 		_ = h.Audit.Write(ctx, store.AuditEvent{Username: result.Username, EventType: "password_reset_completed"})
 	}
 
-	http.Redirect(w, r, "/login", http.StatusSeeOther)
+	// Auto-login: the reset token already proved control of the account, so
+	// making the user re-enter the password they just chose on a separate
+	// /login page is redundant friction, and it's what previously stranded
+	// people on a bare /login with the original return_to (e.g. an OIDC
+	// /authorize redirect) lost. If session issuance fails for some reason,
+	// fall back to /login rather than erroring -- the password change itself
+	// already succeeded.
+	if h.Sessions != nil {
+		sourceIP := tp.ClientIP(r).String()
+		if err := h.Sessions.Issue(ctx, w, result.Username, r.UserAgent(), sourceIP); err == nil {
+			http.Redirect(w, r, returnTo, http.StatusSeeOther)
+			return
+		}
+	}
+	http.Redirect(w, r, "/login?return_to="+url.QueryEscape(returnTo), http.StatusSeeOther)
 }
 
 func humanDuration(d time.Duration) string {

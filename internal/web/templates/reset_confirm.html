@@ -3,6 +3,7 @@
 <form method="post" action="/reset/confirm" id="set-password-form">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <input type="hidden" name="token" value="{{.Token}}">
+  <input type="hidden" name="return_to" value="{{.ReturnTo}}">
   <label>New password
     <input type="password" name="password" id="password" autocomplete="new-password" required minlength="{{.MinLength}}">
   </label>
