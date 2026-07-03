@@ -16,12 +16,11 @@ import (
 
 func runServe(args []string) error {
 	fs := flag.NewFlagSet("serve", flag.ExitOnError)
-	configPath := fs.String("config", "/etc/declarativeauth/config/declarativeauth.yaml", "path to declarativeauth.yaml")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
-	cfg, err := config.LoadServerConfig(*configPath)
+	cfg, err := config.LoadServerConfigFromEnv()
 	if err != nil {
 		return err
 	}
@@ -46,8 +45,8 @@ func runServe(args []string) error {
 
 	holder := &config.SnapshotHolder{}
 	watcher := &config.Watcher{
-		IdentityPath: cfg.Config.IdentityPath,
-		Debounce:     cfg.Config.ReloadDebounce.Std(),
+		IdentityPath: cfg.Identity.IdentityPath,
+		Debounce:     cfg.Identity.ReloadDebounce.Std(),
 		Holder:       holder,
 		Logger:       logger,
 	}

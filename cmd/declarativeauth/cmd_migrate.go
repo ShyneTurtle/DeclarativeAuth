@@ -5,17 +5,18 @@ import (
 	"fmt"
 	"os"
 
+	"declarativeauth/internal/config"
 	"declarativeauth/internal/store"
 )
 
 func runMigrate(args []string) error {
 	fs := flag.NewFlagSet("migrate", flag.ExitOnError)
-	dsn := fs.String("dsn", os.Getenv("DATABASE_URL"), "Postgres DSN (defaults to $DATABASE_URL)")
+	dsn := fs.String("dsn", os.Getenv(config.EnvDatabaseDSN), "Postgres DSN (defaults to $"+config.EnvDatabaseDSN+")")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *dsn == "" {
-		return fmt.Errorf("no DSN provided (use -dsn or DATABASE_URL)")
+		return fmt.Errorf("no DSN provided (use -dsn or $%s)", config.EnvDatabaseDSN)
 	}
 	if err := store.Migrate(*dsn); err != nil {
 		return err

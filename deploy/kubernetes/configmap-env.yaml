@@ -1,0 +1,48 @@
+# Non-secret DECLARATIVEAUTH_* environment variables, consumed via
+# `envFrom: configMapRef` in deployment.yaml. Secrets (DB password, SMTP
+# password, the Argon2 pepper) live in secret-example.yaml instead -- see
+# .env.example at the repo root for the full variable reference.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: declarativeauth-config
+data:
+  DECLARATIVEAUTH_LOG_LEVEL: info
+  DECLARATIVEAUTH_LOG_FORMAT: json
+
+  DECLARATIVEAUTH_DATABASE_MAX_CONNS: "10"
+
+  DECLARATIVEAUTH_PASSWORD_POLICY_MIN_LENGTH: "12"
+  DECLARATIVEAUTH_PASSWORD_POLICY_MIN_STRENGTH: "3"
+
+  DECLARATIVEAUTH_LDAP_LISTEN_ADDR: "0.0.0.0:636"
+  DECLARATIVEAUTH_LDAP_BASE_DN: "dc=example,dc=com"
+  DECLARATIVEAUTH_LDAP_TLS_ENABLED: "true"
+
+  DECLARATIVEAUTH_OIDC_ISSUER: "https://auth.example.com"
+  DECLARATIVEAUTH_OIDC_LISTEN_ADDR: "0.0.0.0:8443"
+  DECLARATIVEAUTH_OIDC_TLS_ENABLED: "true"
+
+  DECLARATIVEAUTH_SMTP_HOST: smtp.example.com
+  DECLARATIVEAUTH_SMTP_PORT: "587"
+  DECLARATIVEAUTH_SMTP_USERNAME: "notifications@example.com"
+  DECLARATIVEAUTH_SMTP_FROM: "DeclarativeAuth <notifications@example.com>"
+
+  DECLARATIVEAUTH_METRICS_LISTEN_ADDR: "0.0.0.0:9090"
+
+  DECLARATIVEAUTH_IDENTITY_PATH: /etc/declarativeauth/identity
+  DECLARATIVEAUTH_IDENTITY_RELOAD_DEBOUNCE: 500ms
+
+  DECLARATIVEAUTH_NETWORK_TRUSTED_PROXIES: ""
+
+  DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD: "5"
+  DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_BASE: 1s
+  DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_MAX: 15m
+  DECLARATIVEAUTH_RATE_LIMIT_WINDOW: 24h
+
+  DECLARATIVEAUTH_ADMIN_UI_ENABLED: "true"
+  DECLARATIVEAUTH_ADMIN_UI_ADMIN_GROUP: admins
+  DECLARATIVEAUTH_ADMIN_UI_CONFIG_EDITOR_ENABLED: "false"
+
+  DECLARATIVEAUTH_TLS_CERT_FILE: /etc/declarativeauth/tls/tls.crt
+  DECLARATIVEAUTH_TLS_KEY_FILE: /etc/declarativeauth/tls/tls.key

@@ -16,9 +16,9 @@ import (
 // deployments (Docker, Kubernetes) this is typically the bridge/overlay
 // network gateway that a host-level reverse proxy or load balancer
 // connects through -- which is why it's trusted by default for
-// X-Forwarded-* headers (network.trustDefaultGateway in the server
-// config), without requiring an operator to hunt down and hardcode a
-// Docker-assigned address that can differ per host/restart.
+// X-Forwarded-* headers (DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY),
+// without requiring an operator to hunt down and hardcode a Docker-assigned
+// address that can differ per host/restart.
 func DefaultGatewayIP() (net.IP, error) {
 	f, err := os.Open("/proc/net/route")
 	if err != nil {

@@ -5,7 +5,7 @@
 # you, so LDAP/OIDC clients never have to walk the group graph themselves.
 #
 # This file is hot-reloaded: edit it and the change applies within
-# `config.reloadDebounce` (see declarativeauth.yaml), no restart needed.
+# DECLARATIVEAUTH_IDENTITY_RELOAD_DEBOUNCE (see .env.example), no restart needed.
 # Run `declarativeauth validate-config` to check this file (and users.yaml)
 # for mistakes -- like a typo'd group name, or a cycle -- before deploying.
 #
@@ -46,5 +46,5 @@ groups:
       - platform-team       # and still only appears once in a member's flattened group list.
 
   - name: admins
-    description: "DeclarativeAuth administrators -- gates access to the admin UI (see adminUI.adminGroup in declarativeauth.yaml)"
+    description: "DeclarativeAuth administrators -- gates access to the admin UI (see DECLARATIVEAUTH_ADMIN_UI_ADMIN_GROUP in .env.example)"
     memberOfGroups: []

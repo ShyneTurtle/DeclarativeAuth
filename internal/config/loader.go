@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"time"
 
 	"declarativeauth/internal/identity"
@@ -124,33 +123,4 @@ func globOrSingle(dir, single, dirName string) ([]string, error) {
 		return nil, fmt.Errorf("neither %s nor %s/*.yaml found under %s", single, dirName, dir)
 	}
 	return matches, nil
-}
-
-var envVarPattern = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
-
-// interpolateEnv resolves ${VAR} references against the process environment.
-func interpolateEnv(s string) string {
-	return envVarPattern.ReplaceAllStringFunc(s, func(match string) string {
-		name := envVarPattern.FindStringSubmatch(match)[1]
-		if v, ok := os.LookupEnv(name); ok {
-			return v
-		}
-		return match
-	})
-}
-
-// LoadServerConfig reads and parses declarativeauth.yaml, applying defaults
-// and ${VAR} env-var interpolation.
-func LoadServerConfig(path string) (*ServerConfig, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("reading %s: %w", path, err)
-	}
-	b = []byte(interpolateEnv(string(b)))
-	var cfg ServerConfig
-	if err := yaml.UnmarshalStrict(b, &cfg); err != nil {
-		return nil, fmt.Errorf("parsing %s: %w", path, err)
-	}
-	cfg.Defaults()
-	return &cfg, nil
 }

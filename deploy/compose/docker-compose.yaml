@@ -1,0 +1,39 @@
+# Production-image quickstart stack for manual click-through testing
+# (login, password reset email, LDAP search). Run from the repo root:
+#
+#   cp deploy/compose/.env.example deploy/compose/.env
+#   docker compose -f deploy/compose/docker-compose.yaml up -d --build
+#
+# For the Go toolchain dev environment used to build/test the code itself,
+# see docker-compose.dev.yml in this same directory instead.
+services:
+  declarativeauth:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file:
+      - .env
+    ports:
+      - "1389:389"
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ../../examples/identity:/etc/declarativeauth/identity:ro
+    depends_on:
+      - postgres
+      - mailcatcher
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=declarativeauth
+      - POSTGRES_PASSWORD=declarativeauth
+      - POSTGRES_DB=declarativeauth
+    ports:
+      - "5432:5432"
+
+  mailcatcher:
+    image: sj26/mailcatcher
+    ports:
+      - "1080:1080"
+      - "1025:1025"

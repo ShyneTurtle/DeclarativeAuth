@@ -46,12 +46,12 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			trustedCIDRs = append(trustedCIDRs, gw.String()+"/32")
 			logger.Info("trusting default gateway for forwarded headers", "component", "network", "gateway", gw.String())
 		} else {
-			logger.Debug("could not determine default gateway, network.trustDefaultGateway has no effect", "component", "network", "error", err)
+			logger.Debug("could not determine default gateway, "+config.EnvNetworkTrustDefaultGateway+" has no effect", "component", "network", "error", err)
 		}
 	}
 	trustedProxies, err := auth.NewTrustedProxies(trustedCIDRs)
 	if err != nil {
-		return fmt.Errorf("parsing network.trustedProxies: %w", err)
+		return fmt.Errorf("parsing %s: %w", config.EnvNetworkTrustedProxies, err)
 	}
 
 	sessionStore := &store.SessionStore{Pool: pool}
@@ -72,10 +72,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 	auditStore := &store.AuditStore{Pool: pool}
 	hasher := &auth.Hasher{Pepper: []byte(pepper), Params: auth.DefaultArgon2Params}
 
-	smtpPassword := os.Getenv(cfg.SMTP.PasswordEnv)
 	mailClient := &mail.Client{Config: mail.Config{
 		Host: cfg.SMTP.Host, Port: cfg.SMTP.Port,
-		Username: cfg.SMTP.Username, Password: smtpPassword, From: cfg.SMTP.From,
+		Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From,
 	}}
 
 	g, gctx := errgroup.WithContext(ctx)
@@ -176,7 +175,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				CurrentUser:         sessions.CurrentUser,
 				AdminGroup:          cfg.AdminUI.AdminGroup,
 				Mail:                mailClient,
-				IdentityPath:        cfg.Config.IdentityPath,
+				IdentityPath:        cfg.Identity.IdentityPath,
 				ConfigEditorEnabled: cfg.AdminUI.ConfigEditor.Enabled,
 				TrustedProxies:      trustedProxies,
 				OnSMTPTest: func(success bool) {

@@ -7,6 +7,8 @@ exposes that identity through both an LDAP server and an OIDC provider +
 hosted login page, so any downstream system can authenticate against it.
 Postgres is only used for what YAML can't express: password hashes,
 sessions, password-reset tokens, audit history, and brute-force lockouts.
+Everything else -- how the process itself runs -- is configured through
+environment variables.
 
 ```
               users.yaml / groups.yaml   (declarative, hot-reloaded, "who exists")
@@ -31,6 +33,9 @@ identity database that inevitably drifts out of sync.
 
 - **Declarative identity** -- `users.yaml` / `groups.yaml`, hot-reloaded,
   with recursive group inheritance (diamond-safe, cycle-detected).
+- **Environment-variable configuration** -- everything about how the
+  process runs (listeners, database, SMTP, TLS, admin UI) is a
+  `DECLARATIVEAUTH_*` environment variable, 12-factor style.
 - **Username or email, interchangeably**, on LDAP bind, OIDC/web login, and
   the "forgot password" form alike -- all resolve to the same account, so
   brute-force lockout state is shared regardless of which one is used.
@@ -44,7 +49,7 @@ identity database that inevitably drifts out of sync.
 - **OIDC provider** (authorization code + PKCE) and a small hosted login page.
 - **SMTP-based password reset** / first-password-setup flow, with password
   confirmation and a live strength indicator, backed by a configurable
-  minimum length/strength policy (`passwordPolicy` in `declarativeauth.yaml`).
+  minimum length/strength policy.
 - **Hardened password storage**: Argon2id with an HMAC-SHA256 pepper layer.
 - **Persisted brute-force backoff**, shared across LDAP and OIDC/web login.
 - **Reverse-proxy aware**: correct client IP/scheme handling for rate
@@ -55,15 +60,30 @@ identity database that inevitably drifts out of sync.
   declarative files from the browser (single-instance deployments only).
 - **Single static binary**, ~27MB container image, a few MB of RSS at idle.
 
+## Repository layout
+
+```
+cmd/declarativeauth   entrypoint + CLI subcommands
+internal/             application code (see "Architecture" below)
+examples/identity/    a worked users.yaml/groups.yaml example (diamond group inheritance)
+deploy/
+  docker/             production Dockerfile
+  compose/            docker-compose quickstart stack + the Go toolchain dev container
+  kubernetes/         Deployment/Service/ConfigMap/Secret/Certificate/CNPG-Cluster examples
+.env.example          every DECLARATIVEAUTH_* environment variable, with defaults/docs
+test/integration/     integration tests (real Postgres, real SMTP, real LDAP client)
+```
+
 ## Try it out
 
 This spins up DeclarativeAuth plus Postgres and a
 [mailcatcher](https://mailcatcher.me/) (so you can see password-reset
 emails without a real SMTP server) using the example identity in
-[`configs/example/`](configs/example/):
+[`examples/identity/`](examples/identity/):
 
 ```sh
-docker compose up -d --build
+cp deploy/compose/.env.example deploy/compose/.env
+docker compose -f deploy/compose/docker-compose.yaml up -d --build
 ```
 
 | What | Where |
@@ -79,13 +99,14 @@ The example identity declares users but no passwords (passwords never
 live in YAML). Set one:
 
 ```sh
-docker compose exec declarativeauth /declarativeauth admin set-password \
+docker compose -f deploy/compose/docker-compose.yaml exec declarativeauth \
+  /declarativeauth admin set-password \
   -dsn "postgres://declarativeauth:declarativeauth@postgres:5432/declarativeauth?sslmode=disable" \
   -username jsmith -password Secret123!
 ```
 
 (this reads the pepper from `DECLARATIVEAUTH_PASSWORD_PEPPER`, already set
-in the container's environment by `docker-compose.yaml`)
+via `deploy/compose/.env`)
 
 Then log in at http://localhost:8080/login with `jsmith` / `Secret123!`,
 or query LDAP directly:
@@ -97,42 +118,43 @@ ldapsearch -x -H ldap://localhost:1389 \
 ```
 
 `jsmith` isn't declared as a member of `engineering` directly (see
-[`configs/example/groups.yaml`](configs/example/groups.yaml)) -- this
+[`examples/identity/groups.yaml`](examples/identity/groups.yaml)) -- this
 search only returns a result because `engineering` is a transitive
 grandparent via `oncall` -> `backend-team` -> `engineering`, and
 DeclarativeAuth flattens that automatically.
 
 ## Configuring your own deployment
 
-Two separate kinds of config, both YAML, serving different purposes:
+Two separate kinds of input, deliberately different in shape:
 
-1. **Identity** (`users.yaml` + `groups.yaml`) -- *who exists*. See
-   [`configs/example/users.yaml`](configs/example/users.yaml) and
-   [`configs/example/groups.yaml`](configs/example/groups.yaml): every
-   field is commented inline, and the example groups form a deliberate
-   "diamond" to demonstrate inheritance. Point the server at your own copy
-   via `config.identityPath` (below); edits are hot-reloaded, no restart
-   needed.
-2. **Server config** (`declarativeauth.yaml`) -- *how the server runs*:
-   listeners, database DSN, SMTP, rate limiting, TLS, admin UI. See
-   [`configs/example/declarativeauth.yaml`](configs/example/declarativeauth.yaml)
-   for every field, its default, and whether it's required.
+1. **Identity** (`users.yaml` + `groups.yaml`) -- *who exists*, declarative
+   YAML, hot-reloaded. See [`examples/identity/`](examples/identity/):
+   every field is commented inline, and the example groups form a
+   deliberate "diamond" to demonstrate inheritance. Point the server at
+   your own copy via `DECLARATIVEAUTH_IDENTITY_PATH`; edits are
+   hot-reloaded, no restart needed.
+2. **Server config** -- *how the process runs*: listeners, database DSN,
+   SMTP, rate limiting, TLS, admin UI. Entirely `DECLARATIVEAUTH_*`
+   environment variables, set once at process start. See
+   [`.env.example`](.env.example) at the repo root for every variable,
+   its default, and whether it's required.
 
-Secrets (DB password, SMTP password) are never written into either file
-directly -- `declarativeauth.yaml` references them by environment
-variable, either via `${VAR}` interpolation (e.g. in the database DSN) or
-via an explicit `...Env` field naming the variable to read (e.g.
-`smtp.passwordEnv`). The Argon2id password pepper is handled even more
-strictly: it's not a config field at all, always read from a single fixed
-environment variable, `DECLARATIVEAUTH_PASSWORD_PEPPER` -- there's no
-`...Env` field for it, so there's exactly one place to look for how it's
-wired up, in any deployment.
+Secrets (DB password, SMTP password) are just the value of their own
+environment variable (`DECLARATIVEAUTH_DATABASE_DSN` with the password
+embedded, `DECLARATIVEAUTH_SMTP_PASSWORD`) -- however you inject
+environment variables into the process (`docker run --env-file`, a
+Kubernetes Secret, a systemd `EnvironmentFile=`) is however you manage
+these secrets; DeclarativeAuth has no config-templating layer of its own
+to route around. The Argon2id password pepper is handled even more
+strictly: it's not a configurable-name field at all, always read from a
+single fixed environment variable, `DECLARATIVEAUTH_PASSWORD_PEPPER`, so
+there's exactly one place to look for how it's wired up, in any deployment.
 
 For a from-scratch production layout (Kubernetes + CloudNativePG), see
-[`deploy/k8s/`](deploy/k8s/) -- in particular
-[`deploy/k8s/configmap-identity.yaml`](deploy/k8s/configmap-identity.yaml)
-for what a stricter, TLS-everywhere config looks like next to the same
-identity example.
+[`deploy/kubernetes/`](deploy/kubernetes/) -- `configmap-env.yaml` /
+`secret-example.yaml` for the non-secret/secret environment variables
+(consumed via `envFrom`), and `configmap-identity.yaml` for the same
+identity example, mounted as a volume so it can hot-reload.
 
 ## CLI
 
@@ -147,7 +169,7 @@ declarativeauth admin set-password    # seed/reset a password directly (bootstra
 running server uses (so results never diverge), and prints a summary:
 
 ```
-$ declarativeauth validate-config -identity-path configs/example
+$ declarativeauth validate-config -identity-path examples/identity
 config valid: 5 groups, 3 users (1 disabled)
 ```
 
@@ -164,7 +186,7 @@ password" code path.
 
 ```
 cmd/declarativeauth   entrypoint + CLI subcommands
-internal/config       declarative YAML loading, validation, hot-reload, diff logging
+internal/config       declarative identity YAML loading/validation/hot-reload, env-var server config
 internal/identity     domain model + group-inheritance resolver (cycle detection, flattening)
 internal/store        Postgres access layer (credentials, sessions, reset tokens, audit, lockouts)
 internal/auth         password hashing, Authenticate(), brute-force backoff, client IP
@@ -186,33 +208,37 @@ guarantees LDAP and OIDC present an identical view of identity.
 
 ## TLS
 
-Two supported modes, chosen independently per listener (`ldap.tls.enabled`
-/ `oidc.tls.enabled` in `declarativeauth.yaml`):
+Two supported modes, chosen independently per listener
+(`DECLARATIVEAUTH_LDAP_TLS_ENABLED` / `DECLARATIVEAUTH_OIDC_TLS_ENABLED`):
 
-- **Self-terminated**: set `enabled: true` and provide a cert/key pair
-  (either per-listener, or once in the shared top-level `tls:` block).
-  Certs are hot-reloaded from disk on change -- no restart needed to roll
-  a renewed cert. If no cert/key is configured at all while `enabled:
-  true`, an ephemeral self-signed certificate is generated instead (a
-  warning is logged; don't rely on this outside local dev).
-- **Reverse-proxy terminated**: set `enabled: false` and put a
-  TLS-terminating proxy/load balancer in front. Its address needs to be
-  trusted for `X-Forwarded-For` / `X-Forwarded-Proto` headers to be honored
-  (rate limiting, audit logs, and detecting that the original request was
-  HTTPS) -- by default DeclarativeAuth already trusts its own default
-  gateway (`network.trustDefaultGateway`, true by default), which covers
-  the common case of a reverse proxy on the Docker host or in a sidecar
-  reaching the container through its bridge gateway. Add explicit CIDRs to
-  `network.trustedProxies` for anything beyond that (e.g. a load balancer
-  reachable on a different address), or set `trustDefaultGateway: false`
-  if nothing should be trusted implicitly.
+- **Self-terminated**: set `..._TLS_ENABLED=true` and provide a cert/key
+  pair (either per-listener, e.g. `DECLARATIVEAUTH_OIDC_TLS_CERT_FILE`, or
+  once via the shared `DECLARATIVEAUTH_TLS_CERT_FILE`/`_KEY_FILE`). Certs
+  are hot-reloaded from disk on change -- no restart needed to roll a
+  renewed cert. If no cert/key is configured at all while
+  `..._TLS_ENABLED=true`, an ephemeral self-signed certificate is
+  generated instead (a warning is logged; don't rely on this outside local
+  dev).
+- **Reverse-proxy terminated**: leave `..._TLS_ENABLED=false` (the
+  default) and put a TLS-terminating proxy/load balancer in front. Its
+  address needs to be trusted for `X-Forwarded-For` / `X-Forwarded-Proto`
+  headers to be honored (rate limiting, audit logs, and detecting that the
+  original request was HTTPS) -- by default DeclarativeAuth already trusts
+  its own default gateway (`DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY`,
+  true by default), which covers the common case of a reverse proxy on the
+  Docker host or in a sidecar reaching the container through its bridge
+  gateway. Add explicit CIDRs to `DECLARATIVEAUTH_NETWORK_TRUSTED_PROXIES`
+  for anything beyond that (e.g. a load balancer reachable on a different
+  address), or set `DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY=false` if
+  nothing should be trusted implicitly.
 
-Since "reverse-proxy terminated" is indistinguishable, from the config
-alone, from someone simply forgetting to set up TLS at all, the server logs
-an explicit `WARN` at startup whenever a listener has `tls.enabled: false`
-(among other risky settings -- see "Insecure-configuration guards" below)
-so it's never silently the case. There's no way to suppress these short of
-actually fixing the setting; they're informational, not fatal.
+Since "reverse-proxy terminated" is indistinguishable, from the
+configuration alone, from someone simply forgetting to set up TLS at all,
+the server logs an explicit `WARN` at startup whenever a listener has
+TLS disabled (among other risky settings -- see "Insecure-configuration
+guards" below) so it's never silently the case. There's no way to suppress
+these short of actually fixing the setting; they're informational, not
+fatal.
 
 ## Insecure-configuration guards
 
@@ -220,13 +246,14 @@ Two independent layers, since neither can catch everything alone:
 
 - **Startup warnings** (`internal/server/insecure_warnings.go`): logged
   once per `declarativeauth serve` startup for anything that could
-  silently expose credentials -- TLS-disabled listeners, `ldap.allowAnonymousBind: true`,
-  a `passwordPolicy` weaker than the documented defaults, or the config
-  editor enabled without OIDC TLS (which would expose both the admin
-  session cookie and the identity files it can rewrite). These are `WARN`
-  logs, not startup failures -- some of them (e.g. TLS-disabled behind a
-  reverse proxy) are entirely legitimate, so the server can't know for
-  certain something's wrong, only flag what's worth double-checking.
+  silently expose credentials -- TLS-disabled listeners,
+  `DECLARATIVEAUTH_LDAP_ALLOW_ANONYMOUS_BIND=true`, a password policy
+  weaker than the documented defaults, or the config editor enabled
+  without OIDC TLS (which would expose both the admin session cookie and
+  the identity files it can rewrite). These are `WARN` logs, not startup
+  failures -- some of them (e.g. TLS-disabled behind a reverse proxy) are
+  entirely legitimate, so the server can't know for certain something's
+  wrong, only flag what's worth double-checking.
 - **Client-side guard** (`internal/web/static/secure-guard.js`, loaded on
   every login/reset/admin page): refuses to submit any form containing a
   password field unless `window.isSecureContext` is true -- the browser's

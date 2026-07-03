@@ -17,27 +17,27 @@ import (
 // context.
 func warnInsecureConfig(cfg *config.ServerConfig, logger *slog.Logger) {
 	if !cfg.OIDC.TLS.Enabled {
-		logger.Warn("oidc.tls.enabled is false: web login, password reset, and admin traffic (including passwords) will be sent in plaintext unless a TLS-terminating reverse proxy sits in front of this listener",
+		logger.Warn(config.EnvOIDCTLSEnabled+" is false: web login, password reset, and admin traffic (including passwords) will be sent in plaintext unless a TLS-terminating reverse proxy sits in front of this listener",
 			"component", "startup", "listener", "oidc")
 	}
 	if !cfg.LDAP.TLS.Enabled {
-		logger.Warn("ldap.tls.enabled is false: LDAP bind credentials will be sent in plaintext unless a TLS-terminating reverse proxy/stunnel sits in front of this listener",
+		logger.Warn(config.EnvLDAPTLSEnabled+" is false: LDAP bind credentials will be sent in plaintext unless a TLS-terminating reverse proxy/stunnel sits in front of this listener",
 			"component", "startup", "listener", "ldap")
 	}
 	if cfg.LDAP.AllowAnonymousBind {
-		logger.Warn("ldap.allowAnonymousBind is true: unauthenticated clients can query LDAP search (including flattened group membership) without presenting any credentials",
+		logger.Warn(config.EnvLDAPAllowAnonymousBind+" is true: unauthenticated clients can query LDAP search (including flattened group membership) without presenting any credentials",
 			"component", "startup")
 	}
 	if cfg.PasswordPolicy.MinLength > 0 && cfg.PasswordPolicy.MinLength < 8 {
-		logger.Warn("passwordPolicy.minLength is set below the recommended minimum of 8",
+		logger.Warn(config.EnvPasswordPolicyMinLength+" is set below the recommended minimum of 8",
 			"component", "startup", "minLength", cfg.PasswordPolicy.MinLength)
 	}
 	if cfg.PasswordPolicy.MinStrength > 0 && cfg.PasswordPolicy.MinStrength < 2 {
-		logger.Warn("passwordPolicy.minStrength is set below the recommended minimum of 2 (\"fair\"): users will be able to set trivially guessable passwords",
+		logger.Warn(config.EnvPasswordPolicyMinStrength+" is set below the recommended minimum of 2 (\"fair\"): users will be able to set trivially guessable passwords",
 			"component", "startup", "minStrength", cfg.PasswordPolicy.MinStrength)
 	}
 	if cfg.AdminUI.Enabled && cfg.AdminUI.ConfigEditor.Enabled && !cfg.OIDC.TLS.Enabled {
-		logger.Warn("adminUI.configEditor.enabled is true while oidc.tls.enabled is false: an admin session cookie and the declarative identity files it can rewrite are both exposed to anyone on the network path, absent a TLS-terminating reverse proxy",
+		logger.Warn(config.EnvAdminUIConfigEditorEnabled+" is true while "+config.EnvOIDCTLSEnabled+" is false: an admin session cookie and the declarative identity files it can rewrite are both exposed to anyone on the network path, absent a TLS-terminating reverse proxy",
 			"component", "startup")
 	}
 }

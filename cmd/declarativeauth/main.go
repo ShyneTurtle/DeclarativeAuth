@@ -44,5 +44,9 @@ Commands:
   serve             Run the LDAP/OIDC/web/metrics server (default long-running process)
   migrate           Apply pending Postgres migrations and exit
   validate-config   Validate the declarative users/groups config and exit
-  admin             Admin escape-hatch subcommands (set-password)`)
+  admin             Admin escape-hatch subcommands (set-password)
+
+serve is configured entirely through DECLARATIVEAUTH_* environment
+variables -- there is no config file. See .env.example at the repo root
+for the full list, defaults, and descriptions.`)
 }

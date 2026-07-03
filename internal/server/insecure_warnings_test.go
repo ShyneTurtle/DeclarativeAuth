@@ -30,11 +30,11 @@ func TestWarnInsecureConfig_FullyLockedDown(t *testing.T) {
 func TestWarnInsecureConfig_PlaintextListeners(t *testing.T) {
 	cfg := &config.ServerConfig{}
 	out := warningsFor(cfg)
-	if !strings.Contains(out, "oidc.tls.enabled is false") {
-		t.Error("expected a warning about oidc.tls.enabled")
+	if !strings.Contains(out, config.EnvOIDCTLSEnabled+" is false") {
+		t.Error("expected a warning about " + config.EnvOIDCTLSEnabled)
 	}
-	if !strings.Contains(out, "ldap.tls.enabled is false") {
-		t.Error("expected a warning about ldap.tls.enabled")
+	if !strings.Contains(out, config.EnvLDAPTLSEnabled+" is false") {
+		t.Error("expected a warning about " + config.EnvLDAPTLSEnabled)
 	}
 }
 
@@ -43,7 +43,7 @@ func TestWarnInsecureConfig_AnonymousBind(t *testing.T) {
 		OIDC: config.OIDCConfig{TLS: config.TLSListenerConfig{Enabled: true}},
 		LDAP: config.LDAPConfig{TLS: config.TLSListenerConfig{Enabled: true}, AllowAnonymousBind: true},
 	}
-	if out := warningsFor(cfg); !strings.Contains(out, "allowAnonymousBind is true") {
+	if out := warningsFor(cfg); !strings.Contains(out, config.EnvLDAPAllowAnonymousBind+" is true") {
 		t.Errorf("expected a warning about allowAnonymousBind, got:\n%s", out)
 	}
 }
@@ -55,11 +55,11 @@ func TestWarnInsecureConfig_WeakPasswordPolicy(t *testing.T) {
 		PasswordPolicy: config.PasswordPolicyConfig{MinLength: 4, MinStrength: 1},
 	}
 	out := warningsFor(cfg)
-	if !strings.Contains(out, "minLength is set below") {
-		t.Error("expected a warning about minLength")
+	if !strings.Contains(out, config.EnvPasswordPolicyMinLength+" is set below") {
+		t.Error("expected a warning about " + config.EnvPasswordPolicyMinLength)
 	}
-	if !strings.Contains(out, "minStrength is set below") {
-		t.Error("expected a warning about minStrength")
+	if !strings.Contains(out, config.EnvPasswordPolicyMinStrength+" is set below") {
+		t.Error("expected a warning about " + config.EnvPasswordPolicyMinStrength)
 	}
 }
 
@@ -67,7 +67,7 @@ func TestWarnInsecureConfig_ConfigEditorOverPlaintext(t *testing.T) {
 	cfg := &config.ServerConfig{
 		AdminUI: config.AdminUIConfig{Enabled: true, ConfigEditor: config.ConfigEditorConfig{Enabled: true}},
 	}
-	if out := warningsFor(cfg); !strings.Contains(out, "adminUI.configEditor.enabled is true") {
+	if out := warningsFor(cfg); !strings.Contains(out, config.EnvAdminUIConfigEditorEnabled+" is true") {
 		t.Errorf("expected a warning about the config editor over plaintext, got:\n%s", out)
 	}
 }

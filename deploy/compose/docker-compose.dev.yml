@@ -4,13 +4,17 @@ services:
       context: .
       dockerfile: Dockerfile.dev
     volumes:
-      - .:/workspace
+      - ../..:/workspace
       - go-mod-cache:/go/pkg/mod
       - go-build-cache:/root/.cache/go-build
     working_dir: /workspace
     command: sleep infinity
     environment:
+      # DATABASE_URL is the test-suite's own convention (test/integration/helpers_test.go);
+      # DECLARATIVEAUTH_DATABASE_DSN is what `declarativeauth serve|migrate|admin` reads.
+      # Both point at the same database.
       - DATABASE_URL=postgres://declarativeauth:declarativeauth@postgres:5432/declarativeauth?sslmode=disable
+      - DECLARATIVEAUTH_DATABASE_DSN=postgres://declarativeauth:declarativeauth@postgres:5432/declarativeauth?sslmode=disable
       - CGO_ENABLED=0
     depends_on:
       - postgres

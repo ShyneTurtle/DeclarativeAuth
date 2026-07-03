@@ -15,7 +15,7 @@ spec:
       containers:
         - name: declarativeauth
           image: ghcr.io/shyneturtle/declarativeauth:latest
-          args: ["serve", "-config", "/etc/declarativeauth/config/declarativeauth.yaml"]
+          args: ["serve"]
           ports:
             - name: ldaps
               containerPort: 636
@@ -23,22 +23,12 @@ spec:
               containerPort: 8443
             - name: metrics
               containerPort: 9090
-          env:
-            - name: DB_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: declarativeauth-secrets, key: DB_PASSWORD }
-            - name: SMTP_PASSWORD
-              valueFrom:
-                secretKeyRef: { name: declarativeauth-secrets, key: SMTP_PASSWORD }
-            - name: DECLARATIVEAUTH_PASSWORD_PEPPER
-              valueFrom:
-                secretKeyRef: { name: declarativeauth-secrets, key: DECLARATIVEAUTH_PASSWORD_PEPPER }
+          envFrom:
+            - configMapRef: { name: declarativeauth-config }
+            - secretRef: { name: declarativeauth-secrets }
           volumeMounts:
             - name: identity
               mountPath: /etc/declarativeauth/identity
-              readOnly: true
-            - name: config
-              mountPath: /etc/declarativeauth/config
               readOnly: true
             - name: tls
               mountPath: /etc/declarativeauth/tls
@@ -61,7 +51,5 @@ spec:
       volumes:
         - name: identity
           configMap: { name: declarativeauth-identity }
-        - name: config
-          configMap: { name: declarativeauth-config }
         - name: tls
           secret: { secretName: declarativeauth-tls }

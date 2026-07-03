@@ -6,8 +6,8 @@ This project was developed without a local Go toolchain, using a Docker-based
 dev container (WSL on Windows). To reproduce it:
 
 ```sh
-docker compose -f docker-compose.dev.yml up -d --build
-docker compose -f docker-compose.dev.yml exec dev go build ./...
+docker compose -f deploy/compose/docker-compose.dev.yml up -d --build
+docker compose -f deploy/compose/docker-compose.dev.yml exec dev go build ./...
 ```
 
 The dev container includes Go, `staticcheck`, `goose`, and `ldap-utils`, and
@@ -15,12 +15,13 @@ is networked with a Postgres and a mailcatcher service (matching what CI
 uses). If you have Go 1.25+ installed natively, you can of course just work
 directly against the repo instead.
 
-> Note: `docker-compose.yaml` (no suffix) is a *different* stack — it builds
-> the production image for manual click-through testing. Both files default
-> to the same Compose project name if run from this directory, so running
-> one can recreate the other's `postgres`/`mailcatcher` containers. Use
-> `docker compose -p declarativeauth-dev -f docker-compose.dev.yml ...` if
-> you want to run both simultaneously without collisions.
+> Note: `deploy/compose/docker-compose.yaml` (no `.dev` suffix) is a
+> *different* stack — it builds the production image for manual
+> click-through testing. Both files default to the same Compose project
+> name if run from `deploy/compose/`, so running one can recreate the
+> other's `postgres`/`mailcatcher` containers. Use
+> `docker compose -p declarativeauth-dev -f deploy/compose/docker-compose.dev.yml ...`
+> if you want to run both simultaneously without collisions.
 
 ## Running tests
 

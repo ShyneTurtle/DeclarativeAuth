@@ -48,7 +48,7 @@ func startAdminServer(t *testing.T, configEditorEnabled bool) (issuer string, id
 			Threshold: 5, BackoffBase: config.Duration(time.Second),
 			BackoffMax: config.Duration(15 * time.Minute), Window: config.Duration(24 * time.Hour),
 		},
-		Config: config.IdentityConfig{IdentityPath: identityDir},
+		Identity: config.IdentityConfig{IdentityPath: identityDir},
 		AdminUI: config.AdminUIConfig{
 			Enabled: true, AdminGroup: "admins",
 			ConfigEditor: config.ConfigEditorConfig{Enabled: configEditorEnabled},

@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"declarativeauth/internal/auth"
+	"declarativeauth/internal/config"
 	"declarativeauth/internal/store"
 )
 
@@ -24,14 +25,14 @@ func runAdmin(args []string) error {
 
 func runAdminSetPassword(args []string) error {
 	fs := flag.NewFlagSet("admin set-password", flag.ExitOnError)
-	dsn := fs.String("dsn", os.Getenv("DATABASE_URL"), "Postgres DSN (defaults to $DATABASE_URL)")
+	dsn := fs.String("dsn", os.Getenv(config.EnvDatabaseDSN), "Postgres DSN (defaults to $"+config.EnvDatabaseDSN+")")
 	username := fs.String("username", "", "username to set the password for")
 	password := fs.String("password", "", "new password (avoid in shell history; prefer an env-var driven wrapper script)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if *username == "" || *password == "" || *dsn == "" {
-		return fmt.Errorf("-dsn, -username and -password are required")
+		return fmt.Errorf("-dsn (or $%s), -username and -password are required", config.EnvDatabaseDSN)
 	}
 	pepper := os.Getenv(auth.PepperEnvVar)
 	if pepper == "" {

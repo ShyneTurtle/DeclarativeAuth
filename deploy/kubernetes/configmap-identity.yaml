@@ -1,0 +1,34 @@
+# Example ConfigMap holding the declarative users.yaml/groups.yaml, mounted
+# as a volume (not env vars, since env vars can't hot-reload). Edit this
+# ConfigMap (or better, manage it via GitOps) to change identity/authorization
+# — DeclarativeAuth picks up changes via its fsnotify-based watcher once
+# kubelet has synced the updated ConfigMap to the pod's mounted volume.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: declarativeauth-identity
+data:
+  groups.yaml: |
+    apiVersion: declarativeauth.io/v1
+    kind: GroupList
+    groups:
+      - name: engineering
+        description: "All engineering staff"
+        memberOfGroups: []
+      - name: backend-team
+        memberOfGroups: [engineering]
+      - name: platform-team
+        memberOfGroups: [engineering]
+      - name: oncall
+        memberOfGroups: [backend-team, platform-team]
+      - name: admins
+        memberOfGroups: []
+  users.yaml: |
+    apiVersion: declarativeauth.io/v1
+    kind: UserList
+    users:
+      - username: admin
+        email: admin@example.com
+        displayName: "System Admin"
+        enabled: true
+        memberOfGroups: [admins]

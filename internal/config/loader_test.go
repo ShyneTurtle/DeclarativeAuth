@@ -49,19 +49,3 @@ func TestLoadIdentity_MissingDir(t *testing.T) {
 		t.Fatal("expected error for missing directory, got nil")
 	}
 }
-
-func TestInterpolateEnv(t *testing.T) {
-	t.Setenv("DA_TEST_VAR", "secretvalue")
-	got := interpolateEnv("postgres://user:${DA_TEST_VAR}@host/db")
-	want := "postgres://user:secretvalue@host/db"
-	if got != want {
-		t.Fatalf("got %q, want %q", got, want)
-	}
-}
-
-func TestInterpolateEnv_Unset(t *testing.T) {
-	got := interpolateEnv("${DA_TOTALLY_UNSET_VAR}")
-	if got != "${DA_TOTALLY_UNSET_VAR}" {
-		t.Fatalf("expected literal passthrough for unset var, got %q", got)
-	}
-}

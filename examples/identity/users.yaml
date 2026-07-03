@@ -41,7 +41,7 @@ users:
     displayName: "System Admin"   # Explicit override -- shown as-is instead of deriving from firstName/name.
     enabled: true
     memberOfGroups:
-      - admins                     # Member of "admins" -> can reach the admin UI (adminUI.adminGroup in declarativeauth.yaml).
+      - admins                     # Member of "admins" -> can reach the admin UI (DECLARATIVEAUTH_ADMIN_UI_ADMIN_GROUP).
 
   - username: contractor1
     email: contractor1@example.com
