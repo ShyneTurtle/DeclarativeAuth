@@ -63,6 +63,7 @@ type ServerConfig struct {
 	AdminUI        AdminUIConfig
 	TLS            TLSConfig
 	PasswordPolicy PasswordPolicyConfig
+	WebAuthn       WebAuthnConfig
 }
 
 type LoggingConfig struct {
@@ -176,4 +177,16 @@ type ConfigEditorConfig struct {
 type PasswordPolicyConfig struct {
 	MinLength   int
 	MinStrength int
+}
+
+// WebAuthnConfig configures passkey (WebAuthn) registration and login. RPID
+// and RPOrigins default to the OIDC issuer's host/origin when unset (see
+// LoadServerConfigFromEnv), since that's the domain users actually log in
+// against; they only need to be set explicitly when passkeys should be
+// scoped to a different (e.g. broader parent) domain than the issuer.
+type WebAuthnConfig struct {
+	Enabled       bool
+	RPID          string
+	RPOrigins     []string
+	RPDisplayName string
 }

@@ -1,7 +1,7 @@
 # Non-secret DECLARATIVEAUTH_* environment variables, consumed via
 # `envFrom: configMapRef` in deployment.yaml. Secrets (DB password, SMTP
 # password, the Argon2 pepper) live in secret-example.yaml instead -- see
-# .env.example at the repo root for the full variable reference.
+# examples/.env.example for the full variable reference.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -46,3 +46,7 @@ data:
 
   DECLARATIVEAUTH_TLS_CERT_FILE: /etc/declarativeauth/tls/tls.crt
   DECLARATIVEAUTH_TLS_KEY_FILE: /etc/declarativeauth/tls/tls.key
+
+  # RP ID/origins default to DECLARATIVEAUTH_OIDC_ISSUER's host above, so
+  # nothing to set here unless passkeys need a different scope.
+  DECLARATIVEAUTH_WEBAUTHN_ENABLED: "true"

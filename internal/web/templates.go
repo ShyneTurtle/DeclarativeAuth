@@ -18,4 +18,5 @@ var (
 	resetRequestTmpl = mustParse("reset_request.html")
 	resetSentTmpl    = mustParse("reset_sent.html")
 	resetConfirmTmpl = mustParse("reset_confirm.html")
+	homeTmpl         = mustParse("home.html")
 )

@@ -26,8 +26,8 @@ The goal of this project is to make a declarative, easy-to-use, performant, ligh
 - The "forgot password" form shall accept either a username or an email address, interchangeably, resolving both to the same account as login does.
 - The system shall warn operators about insecure configuration choices (e.g. TLS-disabled listeners, anonymous LDAP bind, a weak password policy) at startup, and the browser shall refuse to submit a password over a connection that isn't a secure context.
 - The password-strength estimate shall resist trivial patterns such as a short sequence or a short unit repeated many times, not just raw length and character-class diversity.
+- The system shall support passkeys for OIDC
 
 ## Extensions
 Ideally those extensions can be added after the core project is done:
 - Authenticator app-based MFA with codes (and recovery codes on activation), can be added through the webpage.
-- Passkeys support on the OIDC login page

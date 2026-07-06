@@ -50,6 +50,13 @@ identity database that inevitably drifts out of sync.
 - **SMTP-based password reset** / first-password-setup flow, with password
   confirmation and a live strength indicator, backed by a configurable
   minimum length/strength policy.
+- **Passkey (WebAuthn) support**: manage passkeys from `/`, the user's home
+  page, and log in with one -- no password, no username -- from the login
+  page. A passkey login issues the same web session as a password login, so
+  it works identically for OIDC's login page and `return_to` redirects.
+- **A home page** (`/`, the default post-login destination): shows the
+  logged-in user's name/email, a link to `/admin` for admin-group members,
+  and passkey management.
 - **Hardened password storage**: Argon2id with an HMAC-SHA256 pepper layer.
 - **Persisted brute-force backoff**, shared across LDAP and OIDC/web login.
 - **Reverse-proxy aware**: correct client IP/scheme handling for rate
@@ -70,7 +77,7 @@ deploy/
   docker/             production Dockerfile
   compose/            docker-compose quickstart stack + the Go toolchain dev container
   kubernetes/         Deployment/Service/ConfigMap/Secret/Certificate/CNPG-Cluster examples
-.env.example          every DECLARATIVEAUTH_* environment variable, with defaults/docs
+examples/.env.example every DECLARATIVEAUTH_* environment variable, with defaults/docs
 test/integration/     integration tests (real Postgres, real SMTP, real LDAP client)
 ```
 
@@ -89,6 +96,7 @@ docker compose -f deploy/compose/docker-compose.yaml up -d --build
 | What | Where |
 |---|---|
 | Login page | http://localhost:8080/login |
+| Home page (name/email, admin link, passkeys) | http://localhost:8080/ |
 | Password reset | http://localhost:8080/reset |
 | Caught emails (mailcatcher) | http://localhost:1080 |
 | Admin UI | http://localhost:8080/admin |
@@ -188,11 +196,11 @@ password" code path.
 cmd/declarativeauth   entrypoint + CLI subcommands
 internal/config       declarative identity YAML loading/validation/hot-reload, env-var server config
 internal/identity     domain model + group-inheritance resolver (cycle detection, flattening)
-internal/store        Postgres access layer (credentials, sessions, reset tokens, audit, lockouts)
+internal/store        Postgres access layer (credentials, sessions, reset tokens, audit, lockouts, passkeys)
 internal/auth         password hashing, Authenticate(), brute-force backoff, client IP
 internal/ldapserver   minimal LDAPv3 server (Bind + Search only)
 internal/oidcserver   authorization-code+PKCE OIDC provider
-internal/web          login page, password reset flow, session cookie, CSRF
+internal/web          login page, password reset flow, passkey (WebAuthn) flow, session cookie, CSRF
 internal/admin        gated admin UI (SMTP test, group graph, config editor)
 internal/mail         SMTP client + email templates
 internal/tls          certificate loading + hot rotation + self-signed dev fallback

@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"encoding/base64"
 	"errors"
 	"html/template"
 	"net/http"
@@ -9,16 +10,30 @@ import (
 	"time"
 
 	"declarativeauth/internal/auth"
+	"declarativeauth/internal/identity"
 	"declarativeauth/internal/store"
 )
 
-// Handlers wires the web login/logout endpoints to the shared auth core.
+// Handlers wires the web login/logout endpoints and the user's home/profile
+// page to the shared auth core.
 type Handlers struct {
 	Authenticator  *auth.Authenticator
 	Sessions       *SessionManager
 	TrustedProxies *auth.TrustedProxies
 	Audit          *store.AuditStore
 	StaticFS       http.Handler
+
+	// Snapshot and AdminGroup back the home page: the user's declared
+	// name/email, and whether to show a link to /admin.
+	Snapshot   func() *identity.Snapshot
+	AdminGroup string
+
+	// Passkeys, if non-nil, enables the passkey-management section of the
+	// home page (nil when DECLARATIVEAUTH_WEBAUTHN_ENABLED is false or
+	// misconfigured -- see internal/server/run.go). The home page itself is
+	// always served regardless, since it's also where a user's name/email
+	// live and where post-login/reset redirects with no return_to land.
+	Passkeys *store.WebAuthnCredentialStore
 
 	// OnLoginResult is an optional metrics hook, called after every login
 	// attempt (mirrors ldapserver.Handler.OnBind so both protocols feed the
@@ -27,15 +42,95 @@ type Handlers struct {
 	OnLoginResult func(success bool, duration time.Duration)
 }
 
-// NewMux builds the http.ServeMux for the public web surface (/login,
-// /logout, /static/*). Password reset routes are added in
-// Handlers.RegisterResetRoutes (Section 7 reset flow).
+// NewMux builds the http.ServeMux for the public web surface ("/", /login,
+// /logout, /static/*). Password reset and passkey routes are added in
+// ResetHandlers.RegisterRoutes and PasskeyHandlers.RegisterRoutes.
 func (h *Handlers) NewMux() *http.ServeMux {
 	mux := http.NewServeMux()
+	mux.HandleFunc("/", h.handleHome)
 	mux.HandleFunc("/login", h.handleLogin)
 	mux.HandleFunc("/logout", h.handleLogout)
 	mux.Handle("/static/", http.FileServer(http.FS(assetsFS)))
 	return mux
+}
+
+type passkeyView struct {
+	Name       string
+	IDBase64   string
+	CreatedAt  string
+	LastUsedAt string
+}
+
+type homePageData struct {
+	Title           string
+	Username        string
+	DisplayName     string
+	Email           string
+	IsAdmin         bool
+	CSRFToken       string
+	PasskeysEnabled bool
+	Passkeys        []passkeyView
+	Error           string
+}
+
+// handleHome serves the user's profile page: name/email, an admin-panel
+// link (if applicable), and passkey management. This is "/", the default
+// landing page after login and the default return_to (see
+// sanitizeReturnTo).
+func (h *Handlers) handleHome(w http.ResponseWriter, r *http.Request) {
+	// mux.HandleFunc("/", ...) is a catch-all; only serve the profile page
+	// for the exact root path and 404 everything else that fell through.
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method != http.MethodGet {
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	username, ok := h.Sessions.CurrentUser(r)
+	if !ok {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	secure := h.TrustedProxies.IsForwardedHTTPS(r)
+	csrf := IssueCSRFToken(w, r, secure)
+
+	var views []passkeyView
+	if h.Passkeys != nil {
+		ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+		defer cancel()
+		stored, err := h.Passkeys.ListForUser(ctx, username)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		views = make([]passkeyView, len(stored))
+		for i, sc := range stored {
+			views[i] = passkeyView{
+				Name:       sc.Name,
+				IDBase64:   base64.RawURLEncoding.EncodeToString(sc.Credential.ID),
+				CreatedAt:  sc.CreatedAt.Format("2006-01-02 15:04"),
+				LastUsedAt: "never",
+			}
+			if sc.LastUsedAt != nil {
+				views[i].LastUsedAt = sc.LastUsedAt.Format("2006-01-02 15:04")
+			}
+		}
+	}
+
+	snap := h.Snapshot()
+	u := snap.Users[username]
+	render(w, homeTmpl, homePageData{
+		Title:           "My account",
+		Username:        username,
+		DisplayName:     u.DisplayNameOrDefault(),
+		Email:           u.Email,
+		IsAdmin:         h.AdminGroup != "" && snap.IsMemberOf(username, h.AdminGroup),
+		CSRFToken:       csrf,
+		PasskeysEnabled: h.Passkeys != nil,
+		Passkeys:        views,
+	})
 }
 
 type loginPageData struct {

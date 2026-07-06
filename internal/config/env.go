@@ -3,6 +3,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -70,6 +71,24 @@ const (
 
 	EnvPasswordPolicyMinLength   = "DECLARATIVEAUTH_PASSWORD_POLICY_MIN_LENGTH"
 	EnvPasswordPolicyMinStrength = "DECLARATIVEAUTH_PASSWORD_POLICY_MIN_STRENGTH"
+
+	// EnvWebAuthnEnabled turns passkey registration/login on or off. Defaults
+	// to true: WebAuthn requires a secure context (HTTPS or localhost)
+	// enforced by the browser itself, and RPID/RPOrigins fall back to the
+	// OIDC issuer when unset, so this works out of the box for the common
+	// case rather than needing extra opt-in configuration.
+	EnvWebAuthnEnabled = "DECLARATIVEAUTH_WEBAUTHN_ENABLED"
+	// EnvWebAuthnRPID is the WebAuthn Relying Party ID -- the effective
+	// domain passkeys are scoped to (e.g. "auth.example.com", no scheme or
+	// port). Defaults to the hostname of DECLARATIVEAUTH_OIDC_ISSUER.
+	EnvWebAuthnRPID = "DECLARATIVEAUTH_WEBAUTHN_RP_ID"
+	// EnvWebAuthnRPOrigins is a comma-separated list of fully qualified
+	// origins (scheme + host + optional port) permitted to complete a
+	// WebAuthn ceremony. Defaults to [DECLARATIVEAUTH_OIDC_ISSUER].
+	EnvWebAuthnRPOrigins = "DECLARATIVEAUTH_WEBAUTHN_RP_ORIGINS"
+	// EnvWebAuthnRPDisplayName is the human-readable Relying Party name
+	// shown by the browser/OS passkey UI during registration.
+	EnvWebAuthnRPDisplayName = "DECLARATIVEAUTH_WEBAUTHN_RP_DISPLAY_NAME"
 )
 
 // LoadServerConfigFromEnv builds the server's runtime configuration purely
@@ -185,6 +204,23 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 	}
 	if cfg.PasswordPolicy.MinStrength, err = getenvInt(EnvPasswordPolicyMinStrength, 2); err != nil {
 		return nil, err
+	}
+
+	if cfg.WebAuthn.Enabled, err = getenvBool(EnvWebAuthnEnabled, true); err != nil {
+		return nil, err
+	}
+	cfg.WebAuthn.RPDisplayName = getenv(EnvWebAuthnRPDisplayName, "DeclarativeAuth")
+	cfg.WebAuthn.RPID = os.Getenv(EnvWebAuthnRPID)
+	cfg.WebAuthn.RPOrigins = getenvCSV(EnvWebAuthnRPOrigins)
+	if cfg.WebAuthn.RPID == "" || len(cfg.WebAuthn.RPOrigins) == 0 {
+		if issuerURL, perr := url.Parse(cfg.OIDC.Issuer); perr == nil && issuerURL.Hostname() != "" {
+			if cfg.WebAuthn.RPID == "" {
+				cfg.WebAuthn.RPID = issuerURL.Hostname()
+			}
+			if len(cfg.WebAuthn.RPOrigins) == 0 {
+				cfg.WebAuthn.RPOrigins = []string{issuerURL.Scheme + "://" + issuerURL.Host}
+			}
+		}
 	}
 
 	return cfg, nil

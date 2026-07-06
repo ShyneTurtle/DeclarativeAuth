@@ -22,6 +22,7 @@ import (
 	"declarativeauth/internal/store"
 	"declarativeauth/internal/web"
 
+	"github.com/go-webauthn/webauthn/webauthn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"golang.org/x/sync/errgroup"
 )
@@ -140,6 +141,8 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Sessions:       sessions,
 			TrustedProxies: trustedProxies,
 			Audit:          auditStore,
+			Snapshot:       holder.Get,
+			AdminGroup:     cfg.AdminUI.AdminGroup,
 			OnLoginResult: func(success bool, d time.Duration) {
 				if reg == nil {
 					return
@@ -169,6 +172,43 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			},
 		}
 		resetHandlers.RegisterRoutes(webMux, trustedProxies, sessions.CurrentUser, cfg.AdminUI.AdminGroup)
+
+		if cfg.WebAuthn.Enabled {
+			if cfg.WebAuthn.RPID == "" || len(cfg.WebAuthn.RPOrigins) == 0 {
+				logger.Warn("webauthn enabled but RP ID/origins could not be determined (set "+config.EnvOIDCIssuer+" or "+config.EnvWebAuthnRPID+"/"+config.EnvWebAuthnRPOrigins+"); passkeys disabled", "component", "webauthn")
+			} else if wa, err := webauthn.New(&webauthn.Config{
+				RPID:          cfg.WebAuthn.RPID,
+				RPDisplayName: cfg.WebAuthn.RPDisplayName,
+				RPOrigins:     cfg.WebAuthn.RPOrigins,
+			}); err != nil {
+				logger.Warn("webauthn configuration invalid, passkeys disabled", "component", "webauthn", "error", err)
+			} else {
+				webauthnCredentials := &store.WebAuthnCredentialStore{Pool: pool}
+				passkeyHandlers := &web.PasskeyHandlers{
+					WebAuthn:       wa,
+					Credentials:    webauthnCredentials,
+					Ceremonies:     &store.WebAuthnCeremonyStore{Pool: pool},
+					Snapshot:       holder.Get,
+					Sessions:       sessions,
+					TrustedProxies: trustedProxies,
+					Audit:          auditStore,
+					OnLoginResult: func(success bool, d time.Duration) {
+						if reg == nil {
+							return
+						}
+						result := "failure"
+						if success {
+							result = "success"
+						}
+						reg.LoginAttemptsTotal.WithLabelValues("passkey", result).Inc()
+						reg.LoginDurationSeconds.WithLabelValues("passkey").Observe(d.Seconds())
+					},
+				}
+				passkeyHandlers.RegisterRoutes(webMux)
+				webHandlers.Passkeys = webauthnCredentials
+				logger.Info("webauthn passkeys enabled", "component", "webauthn", "rp_id", cfg.WebAuthn.RPID)
+			}
+		}
 
 		if cfg.AdminUI.Enabled {
 			adminHandlers := &admin.Handlers{
