@@ -46,6 +46,7 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 				Name:           g.Name,
 				Description:    g.Description,
 				MemberOfGroups: g.MemberOfGroups,
+				RequireMFA:     g.RequireMFA,
 			}
 		}
 	}
@@ -87,6 +88,7 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 				DisplayName:    u.DisplayName,
 				Enabled:        enabled,
 				MemberOfGroups: u.MemberOfGroups,
+				MFAEnabled:     u.MFAEnabled,
 			}
 		}
 	}

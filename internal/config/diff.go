@@ -70,14 +70,14 @@ func DiffSnapshots(old, updated *identity.Snapshot) SnapshotDiff {
 
 func usersEqual(a, b identity.User) bool {
 	if a.Email != b.Email || a.FirstName != b.FirstName || a.Name != b.Name ||
-		a.DisplayName != b.DisplayName || a.Enabled != b.Enabled {
+		a.DisplayName != b.DisplayName || a.Enabled != b.Enabled || a.MFAEnabled != b.MFAEnabled {
 		return false
 	}
 	return stringSlicesEqualAsSets(a.MemberOfGroups, b.MemberOfGroups)
 }
 
 func groupsEqual(a, b identity.Group) bool {
-	if a.Description != b.Description {
+	if a.Description != b.Description || a.RequireMFA != b.RequireMFA {
 		return false
 	}
 	return stringSlicesEqualAsSets(a.MemberOfGroups, b.MemberOfGroups)

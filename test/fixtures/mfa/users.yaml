@@ -1,0 +1,19 @@
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: bysecuregroup
+    email: bysecuregroup@example.com
+    enabled: true
+    memberOfGroups:
+      - secure-team
+  - username: byuserflag
+    email: byuserflag@example.com
+    enabled: true
+    memberOfGroups:
+      - regular-team
+    mfaEnabled: true
+  - username: nomfa
+    email: nomfa@example.com
+    enabled: true
+    memberOfGroups:
+      - regular-team

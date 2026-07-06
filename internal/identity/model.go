@@ -9,6 +9,10 @@ type Group struct {
 	Name           string
 	Description    string
 	MemberOfGroups []string
+	// RequireMFA, when true, means every member of this group -- direct or
+	// transitive, same as any other membership property -- must complete
+	// email-based MFA at login. See Snapshot.MFARequiredByDeclaration.
+	RequireMFA bool
 }
 
 // User is a declared user with direct group memberships.
@@ -20,6 +24,12 @@ type User struct {
 	DisplayName    string
 	Enabled        bool
 	MemberOfGroups []string
+	// MFAEnabled declaratively forces email-based MFA on for this specific
+	// user, regardless of group membership. This is separate from a user's
+	// own self-service MFA preference (stored in Postgres, not here): the
+	// declarative flag can only turn MFA on, never override a self-service
+	// opt-in off.
+	MFAEnabled bool
 }
 
 // DisplayNameOrDefault returns the user's explicit DisplayName if set,
@@ -58,6 +68,24 @@ type Snapshot struct {
 func (s *Snapshot) IsMemberOf(username, group string) bool {
 	for _, g := range s.FlattenedMemberOf[username] {
 		if g == group {
+			return true
+		}
+	}
+	return false
+}
+
+// MFARequiredByDeclaration reports whether username is required to
+// complete email-based MFA purely by declarative configuration: either
+// their own User.MFAEnabled override, or membership (direct or transitive)
+// in any group with Group.RequireMFA set. This does not account for a
+// user's own self-service MFA preference, which lives in Postgres, not the
+// declarative snapshot -- see auth.MFAPolicy for the combined decision.
+func (s *Snapshot) MFARequiredByDeclaration(username string) bool {
+	if u, ok := s.Users[username]; ok && u.MFAEnabled {
+		return true
+	}
+	for _, g := range s.FlattenedMemberOf[username] {
+		if grp, ok := s.Groups[g]; ok && grp.RequireMFA {
 			return true
 		}
 	}

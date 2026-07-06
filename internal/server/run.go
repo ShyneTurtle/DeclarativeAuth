@@ -136,6 +136,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			return fmt.Errorf("generating OIDC signing key: %w", err)
 		}
 		provider := oidcserver.NewProvider(cfg, keys, holder.Get, sessions.CurrentUser)
+		mfaSettings := &store.UserMFASettingsStore{Pool: pool}
+		mfaChallenges := &store.EmailChallengeStore{Pool: pool}
+		mfaPolicy := &auth.MFAPolicy{Snapshot: holder.Get, Settings: mfaSettings}
 		webHandlers := &web.Handlers{
 			Authenticator:  authenticator,
 			Sessions:       sessions,
@@ -143,6 +146,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Audit:          auditStore,
 			Snapshot:       holder.Get,
 			AdminGroup:     cfg.AdminUI.AdminGroup,
+			MFAPolicy:      mfaPolicy,
+			MFAChallenges:  mfaChallenges,
+			MFAMail:        mailClient,
 			OnLoginResult: func(success bool, d time.Duration) {
 				if reg == nil {
 					return
@@ -172,6 +178,17 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			},
 		}
 		resetHandlers.RegisterRoutes(webMux, trustedProxies, sessions.CurrentUser, cfg.AdminUI.AdminGroup)
+
+		mfaHandlers := &web.MFAHandlers{
+			Snapshot:       holder.Get,
+			Settings:       mfaSettings,
+			Challenges:     mfaChallenges,
+			Mail:           mailClient,
+			Sessions:       sessions,
+			TrustedProxies: trustedProxies,
+			Audit:          auditStore,
+		}
+		mfaHandlers.RegisterRoutes(webMux)
 
 		if cfg.WebAuthn.Enabled {
 			if cfg.WebAuthn.RPID == "" || len(cfg.WebAuthn.RPOrigins) == 0 {

@@ -27,7 +27,4 @@ The goal of this project is to make a declarative, easy-to-use, performant, ligh
 - The system shall warn operators about insecure configuration choices (e.g. TLS-disabled listeners, anonymous LDAP bind, a weak password policy) at startup, and the browser shall refuse to submit a password over a connection that isn't a secure context.
 - The password-strength estimate shall resist trivial patterns such as a short sequence or a short unit repeated many times, not just raw length and character-class diversity.
 - The system shall support passkeys for OIDC
-
-## Extensions
-Ideally those extensions can be added after the core project is done:
-- Authenticator app-based MFA with codes (and recovery codes on activation), can be added through the webpage.
+- The system shall support email-based two-factor authentication: after a successful password login, a one-time code is emailed to the user's declared address and must be entered before a session is issued. It shall be enforceable declaratively (per-group via a "require MFA" flag, inherited the same way other group properties flatten, or per-user via an individual override field), and independently self-enabled by any user from their profile page even when not declaratively required.

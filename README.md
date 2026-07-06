@@ -54,9 +54,17 @@ identity database that inevitably drifts out of sync.
   page, and log in with one -- no password, no username -- from the login
   page. A passkey login issues the same web session as a password login, so
   it works identically for OIDC's login page and `return_to` redirects.
+- **Email-based two-factor authentication**: after a correct password, a
+  one-time 6-digit code is emailed and must be entered at `/login/mfa`
+  before a session is issued. Enforceable declaratively -- a `requireMFA`
+  flag on a group (inherited the same way group membership flattens) or a
+  `mfaEnabled` flag on an individual user in `users.yaml` -- and any user
+  can also turn it on for themselves from the home page even when not
+  declaratively required (self-service opt-in can't be turned off by a
+  declarative change, only by the user themselves).
 - **A home page** (`/`, the default post-login destination): shows the
   logged-in user's name/email, a link to `/admin` for admin-group members,
-  and passkey management.
+  passkey management, and the email-MFA toggle above.
 - **Hardened password storage**: Argon2id with an HMAC-SHA256 pepper layer.
 - **Persisted brute-force backoff**, shared across LDAP and OIDC/web login.
 - **Reverse-proxy aware**: correct client IP/scheme handling for rate
@@ -196,11 +204,11 @@ password" code path.
 cmd/declarativeauth   entrypoint + CLI subcommands
 internal/config       declarative identity YAML loading/validation/hot-reload, env-var server config
 internal/identity     domain model + group-inheritance resolver (cycle detection, flattening)
-internal/store        Postgres access layer (credentials, sessions, reset tokens, audit, lockouts, passkeys)
-internal/auth         password hashing, Authenticate(), brute-force backoff, client IP
+internal/store        Postgres access layer (credentials, sessions, reset tokens, audit, lockouts, passkeys, email-MFA)
+internal/auth         password hashing, Authenticate(), MFAPolicy, brute-force backoff, client IP
 internal/ldapserver   minimal LDAPv3 server (Bind + Search only)
 internal/oidcserver   authorization-code+PKCE OIDC provider
-internal/web          login page, password reset flow, passkey (WebAuthn) flow, session cookie, CSRF
+internal/web          login page, password reset flow, passkey (WebAuthn) flow, email-MFA flow, session cookie, CSRF
 internal/admin        gated admin UI (SMTP test, group graph, config editor)
 internal/mail         SMTP client + email templates
 internal/tls          certificate loading + hot rotation + self-signed dev fallback

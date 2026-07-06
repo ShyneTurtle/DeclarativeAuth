@@ -15,6 +15,9 @@ type GroupSpec struct {
 	Name           string   `json:"name"`
 	Description    string   `json:"description"`
 	MemberOfGroups []string `json:"memberOfGroups"`
+	// RequireMFA, when true, requires every member of this group (direct or
+	// transitive) to complete email-based MFA at login.
+	RequireMFA bool `json:"requireMFA"`
 }
 
 // UserFile is the on-disk shape of users.yaml.
@@ -34,6 +37,12 @@ type UserSpec struct {
 	DisplayName    string   `json:"displayName"`
 	Enabled        *bool    `json:"enabled"`
 	MemberOfGroups []string `json:"memberOfGroups"`
+	// MFAEnabled declaratively forces email-based MFA on for this user,
+	// regardless of group membership. Unlike Enabled, this has no "unset"
+	// tri-state: it defaults to false (not individually required), and
+	// group-level RequireMFA or the user's own self-service opt-in
+	// (managed from their profile page, not here) can still require it.
+	MFAEnabled bool `json:"mfaEnabled"`
 }
 
 // ServerConfig is the server's runtime configuration: listeners, database,

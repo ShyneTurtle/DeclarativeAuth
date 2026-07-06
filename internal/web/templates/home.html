@@ -8,6 +8,18 @@
   {{if .IsAdmin}} &middot; <a href="/admin">Admin</a>{{end}}
 </p>
 
+<h2>Two-factor authentication (email)</h2>
+{{if .MFARequired}}
+<p>Required for your account by policy.</p>
+{{else}}
+<p>Status: {{if .MFASelfEnabled}}Enabled{{else}}Disabled{{end}}</p>
+<form method="post" action="/account/mfa">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <input type="hidden" name="enabled" value="{{if .MFASelfEnabled}}false{{else}}true{{end}}">
+  <button type="submit">{{if .MFASelfEnabled}}Disable{{else}}Enable{{end}}</button>
+</form>
+{{end}}
+
 {{if .PasskeysEnabled}}
 <h2>Passkeys</h2>
 <p>Passkeys let you log in without a password, using a device's built-in authenticator (fingerprint, face, security key, or password manager).</p>

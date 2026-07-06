@@ -49,3 +49,32 @@ func TestLoadIdentity_MissingDir(t *testing.T) {
 		t.Fatal("expected error for missing directory, got nil")
 	}
 }
+
+func TestLoadIdentity_MFAFields(t *testing.T) {
+	snap, err := LoadIdentity(fixture("mfa"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !snap.Groups["secure-team"].RequireMFA {
+		t.Fatal("expected secure-team.RequireMFA to be true")
+	}
+	if snap.Groups["regular-team"].RequireMFA {
+		t.Fatal("expected regular-team.RequireMFA to be false")
+	}
+	if !snap.Users["byuserflag"].MFAEnabled {
+		t.Fatal("expected byuserflag.MFAEnabled to be true")
+	}
+	if snap.Users["nomfa"].MFAEnabled {
+		t.Fatal("expected nomfa.MFAEnabled to be false")
+	}
+
+	if !snap.MFARequiredByDeclaration("bysecuregroup") {
+		t.Fatal("expected bysecuregroup to require MFA via group membership")
+	}
+	if !snap.MFARequiredByDeclaration("byuserflag") {
+		t.Fatal("expected byuserflag to require MFA via per-user override")
+	}
+	if snap.MFARequiredByDeclaration("nomfa") {
+		t.Fatal("expected nomfa to not require MFA")
+	}
+}

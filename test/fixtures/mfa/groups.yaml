@@ -1,0 +1,10 @@
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: secure-team
+    description: "Requires MFA for all members"
+    memberOfGroups: []
+    requireMFA: true
+  - name: regular-team
+    description: "No MFA requirement"
+    memberOfGroups: []

@@ -22,6 +22,10 @@
 #   displayName      optional explicit override for the combined firstName+name (see jsmith vs admin below).
 #   enabled          (required) false = account still exists (kept for audit/history) but cannot log in.
 #   memberOfGroups   direct group memberships; must reference names declared in groups.yaml.
+#   mfaEnabled       optional, default false -- forces email-based MFA on for this specific user,
+#                     regardless of group membership. (A group's `requireMFA: true` in groups.yaml
+#                     does the same for every member, direct or transitive. Either source is enough;
+#                     a user can also self-enable MFA from their profile page independently of both.)
 
 apiVersion: declarativeauth.io/v1
 kind: UserList

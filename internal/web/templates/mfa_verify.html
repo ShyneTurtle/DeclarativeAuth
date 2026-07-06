@@ -1,0 +1,15 @@
+{{define "content"}}
+{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+<p>We've emailed you a 6-digit verification code. Enter it below to finish logging in.</p>
+<form method="post" action="/login/mfa">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <label>Verification code
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required autofocus>
+  </label>
+  <button type="submit">Verify</button>
+</form>
+<form method="post" action="/login/mfa/resend">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <button type="submit">Resend code</button>
+</form>
+{{end}}

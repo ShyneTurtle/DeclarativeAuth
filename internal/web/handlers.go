@@ -11,6 +11,7 @@ import (
 
 	"declarativeauth/internal/auth"
 	"declarativeauth/internal/identity"
+	"declarativeauth/internal/mail"
 	"declarativeauth/internal/store"
 )
 
@@ -34,6 +35,15 @@ type Handlers struct {
 	// always served regardless, since it's also where a user's name/email
 	// live and where post-login/reset redirects with no return_to land.
 	Passkeys *store.WebAuthnCredentialStore
+
+	// Email-based MFA. Unlike Passkeys, this is a core requirement, not a
+	// conditional feature, so these are always set (see internal/server/run.go)
+	// and handleLoginSubmit always consults MFAPolicy after a successful
+	// password check.
+	MFAPolicy     *auth.MFAPolicy
+	MFAChallenges *store.EmailChallengeStore
+	MFAMail       *mail.Client
+	MFACodeTTL    time.Duration // defaults to 10 minutes if zero, see mfaChallengeTTL
 
 	// OnLoginResult is an optional metrics hook, called after every login
 	// attempt (mirrors ldapserver.Handler.OnBind so both protocols feed the
@@ -70,6 +80,8 @@ type homePageData struct {
 	CSRFToken       string
 	PasskeysEnabled bool
 	Passkeys        []passkeyView
+	MFARequired     bool // declaratively required: the toggle below is hidden, not just disabled
+	MFASelfEnabled  bool
 	Error           string
 }
 
@@ -121,6 +133,18 @@ func (h *Handlers) handleHome(w http.ResponseWriter, r *http.Request) {
 
 	snap := h.Snapshot()
 	u := snap.Users[username]
+
+	mfaRequired := snap.MFARequiredByDeclaration(username)
+	mfaSelfEnabled := false
+	if h.MFAPolicy != nil && h.MFAPolicy.Settings != nil {
+		var err error
+		mfaSelfEnabled, err = h.MFAPolicy.Settings.IsEnabled(r.Context(), username)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	render(w, homeTmpl, homePageData{
 		Title:           "My account",
 		Username:        username,
@@ -130,6 +154,8 @@ func (h *Handlers) handleHome(w http.ResponseWriter, r *http.Request) {
 		CSRFToken:       csrf,
 		PasskeysEnabled: h.Passkeys != nil,
 		Passkeys:        views,
+		MFARequired:     mfaRequired,
+		MFASelfEnabled:  mfaSelfEnabled,
 	})
 }
 
@@ -204,22 +230,44 @@ func (h *Handlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request, sec
 	if result != nil {
 		auditUsername = result.Username
 	}
-	if h.Audit != nil {
-		reason := ""
-		var ae *auth.AuthError
-		if errors.As(err, &ae) {
-			reason = string(ae.Reason)
-		}
-		_ = h.Audit.Write(ctx, store.AuditEvent{
-			Username: auditUsername, EventType: eventType, Detail: reason, UserAgent: r.UserAgent(),
-		})
-	}
 	if err != nil {
+		if h.Audit != nil {
+			reason := ""
+			var ae *auth.AuthError
+			if errors.As(err, &ae) {
+				reason = string(ae.Reason)
+			}
+			_ = h.Audit.Write(ctx, store.AuditEvent{
+				Username: auditUsername, EventType: eventType, Detail: reason, UserAgent: r.UserAgent(),
+			})
+		}
 		// Generic error regardless of cause, to avoid user enumeration.
 		render(w, loginTmpl, loginPageData{Title: "Log in", Error: "Invalid username or password.", CSRFToken: IssueCSRFToken(w, r, secure), ReturnTo: returnTo})
 		return
 	}
 
+	if h.MFAPolicy != nil {
+		mfaRequired, mfaErr := h.MFAPolicy.Required(ctx, result.Username)
+		if mfaErr != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		if mfaRequired {
+			if h.Audit != nil {
+				_ = h.Audit.Write(ctx, store.AuditEvent{Username: result.Username, EventType: "oidc_login_mfa_sent", UserAgent: r.UserAgent()})
+			}
+			if err := h.startMFAChallenge(w, r, secure, result.Username, returnTo); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			http.Redirect(w, r, "/login/mfa", http.StatusSeeOther)
+			return
+		}
+	}
+
+	if h.Audit != nil {
+		_ = h.Audit.Write(ctx, store.AuditEvent{Username: auditUsername, EventType: eventType, UserAgent: r.UserAgent()})
+	}
 	if err := h.Sessions.Issue(ctx, w, result.Username, r.UserAgent(), sourceIP); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return

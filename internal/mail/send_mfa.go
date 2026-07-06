@@ -1,9 +1,8 @@
 package mail
 
-// SendMFACode is a placeholder for the future email-OTP MFA extension; not
-// wired to any live login-flow branch since MFA delivery is a natural
-// extension of this same module once TOTP/MFA lands (see
-// internal/store/migrations/00005_mfa_secrets.sql).
+// SendMFACode emails a one-time email-MFA verification code, sent from
+// web.MFAHandlers after a successful password login for any account that
+// requires (or has self-enabled) email-based MFA.
 func (c *Client) SendMFACode(to, code string) error {
 	return c.Send(to, "Your DeclarativeAuth verification code",
 		"Your verification code is: "+code,

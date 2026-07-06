@@ -48,3 +48,4 @@ groups:
   - name: admins
     description: "DeclarativeAuth administrators -- gates access to the admin UI (see DECLARATIVEAUTH_ADMIN_UI_ADMIN_GROUP in .env.example)"
     memberOfGroups: []
+    requireMFA: true   # Every admin (direct or transitive member) must complete email-based MFA at login.

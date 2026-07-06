@@ -19,4 +19,5 @@ var (
 	resetSentTmpl    = mustParse("reset_sent.html")
 	resetConfirmTmpl = mustParse("reset_confirm.html")
 	homeTmpl         = mustParse("home.html")
+	mfaVerifyTmpl    = mustParse("mfa_verify.html")
 )
