@@ -1,10 +1,19 @@
 # Stage 1: build a static binary
-FROM golang:1.25-bookworm AS build
+#
+# --platform=$BUILDPLATFORM pins this stage to the *builder's* native arch
+# regardless of which arch we're targeting, so cross-compiling for arm64
+# from an amd64 CI runner (or vice versa) runs the Go toolchain natively --
+# no QEMU emulation of the compiler itself, just Go's own GOOS/GOARCH
+# cross-compilation. TARGETOS/TARGETARCH are set automatically by
+# buildx per --platform entry (see .github/workflows/docker-build.yaml).
+FROM --platform=$BUILDPLATFORM golang:1.25-bookworm AS build
+ARG TARGETOS
+ARG TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/declarativeauth ./cmd/declarativeauth
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/declarativeauth ./cmd/declarativeauth
 # Pre-create the identity mountpoint here, where a shell exists, so it
 # lands in the final image with known-good permissions (0755: traversable
 # by the "nonroot" user the final stage runs as). The distroless base below
@@ -18,6 +27,12 @@ RUN CGO_ENABLED=0 GOOS=linux go build -trimpath -ldflags="-s -w" -o /out/declara
 RUN mkdir -p /identity && chmod 755 /identity
 
 # Stage 2: minimal runtime
+#
+# No --platform here: a stage with no explicit --platform already defaults
+# to $TARGETPLATFORM, so this pulls the arm64 or amd64 variant of the
+# distroless base to match whichever platform this image instance is
+# actually for. No RUN steps below, only COPY, so no emulation is needed
+# for this stage either.
 FROM gcr.io/distroless/static-debian12:nonroot
 COPY --from=build /out/declarativeauth /declarativeauth
 COPY --from=build /identity /etc/declarativeauth/identity
