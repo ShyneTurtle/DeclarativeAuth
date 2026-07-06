@@ -14,8 +14,8 @@ environment variables.
               users.yaml / groups.yaml   (declarative, hot-reloaded, "who exists")
                         |
                         v
-                 DeclarativeAuth  <----->  Postgres  ("what only a database can hold":
-                   /    |     \                       password hashes, sessions, audit log)
+                 DeclarativeAuth  <----->  Postgres  (password hashes, sessions, logs)
+                   /    |     \
                   /     |      \
               LDAP    OIDC    web login/reset page
              server  provider  (+ small admin UI)
@@ -23,71 +23,37 @@ environment variables.
 
 ## Why this exists
 
-If your users and their group memberships are already checked into a repo
-somewhere (e.g. next to your Kubernetes manifests, or in an internal
-"who's on the team" YAML file), DeclarativeAuth lets that file *be* the
-source of truth for authentication, instead of syncing it into a separate
-identity database that inevitably drifts out of sync.
+Managing users using a UI is nice & pretty, until you need to do something with that data.
+
+Config file can be versioned, edited, generated, shared however you like - it's just files, not database records.
+
+This is a lightweight & secure alternative to hard to heavy (authentik), hard to maintain (kanidm) or basic (lldap) auth systems.
 
 ## Features
 
 - **Declarative identity** -- `users.yaml` / `groups.yaml`, hot-reloaded,
   with recursive group inheritance (diamond-safe, cycle-detected).
-- **Environment-variable configuration** -- everything about how the
-  process runs (listeners, database, SMTP, TLS, admin UI) is a
-  `DECLARATIVEAUTH_*` environment variable, 12-factor style.
-- **Username or email, interchangeably**, on LDAP bind, OIDC/web login, and
-  the "forgot password" form alike -- all resolve to the same account, so
-  brute-force lockout state is shared regardless of which one is used.
-- **Insecure-configuration guards**: the server logs an explicit warning at
-  startup for anything that could silently expose credentials (TLS-disabled
-  listeners, anonymous LDAP bind, a weak password policy, the config editor
-  running without TLS); the browser refuses to submit any password field at
-  all when the page wasn't loaded over a secure connection.
+- **Single static binary**, ~27MB container image, a few MB of RSS at idle.
+- **Passkey (WebAuthn) support**
+- **Username or email, interchangeably**, both resolve to the same account.
+- **OIDC provider**, authorization code + PKCE
 - **LDAP v3 server** (simple bind + search) with fully flattened
   `memberOf`, so LDAP-only clients don't need to understand nested groups.
-- **OIDC provider** (authorization code + PKCE) and a small hosted login page.
-- **SMTP-based password reset** / first-password-setup flow, with password
-  confirmation and a live strength indicator, backed by a configurable
-  minimum length/strength policy.
-- **Passkey (WebAuthn) support**: manage passkeys from `/`, the user's home
-  page, and log in with one -- no password, no username -- from the login
-  page. A passkey login issues the same web session as a password login, so
-  it works identically for OIDC's login page and `return_to` redirects.
-- **Email-based two-factor authentication**: after a correct password, a
-  one-time 6-digit code is emailed and must be entered at `/login/mfa`
-  before a session is issued. Enforceable declaratively -- a `requireMFA`
-  flag on a group (inherited the same way group membership flattens) or a
-  `mfaEnabled` flag on an individual user in `users.yaml` -- and any user
-  can also turn it on for themselves from the home page even when not
-  declaratively required (self-service opt-in can't be turned off by a
-  declarative change, only by the user themselves).
-- **A home page** (`/`, the default post-login destination): shows the
-  logged-in user's name/email, a link to `/admin` for admin-group members,
-  passkey management, and the email-MFA toggle above.
-- **Hardened password storage**: Argon2id with an HMAC-SHA256 pepper layer.
+- **Insecure-configuration guards**: the browser refuses to submit any password 
+  field at all when the page wasn't loaded over a secure connection. 
+  The server logs an explicit warning at startup for insecure configurations.
+- **SMTP-based password reset & MFA**: configurable minimum length & strength
+  policy, group & per-user enforceable MFA (users can still opt in even when
+  not enforced, but they can't opt out if they are).
 - **Persisted brute-force backoff**, shared across LDAP and OIDC/web login.
+- **Environment-variable configuration**
+- **Hardened password storage**: Argon2id with an HMAC-SHA256 pepper layer.
 - **Reverse-proxy aware**: correct client IP/scheme handling for rate
   limiting and audit logs when deployed behind a load balancer.
 - **Observability**: Prometheus metrics, structured JSON logs, `/healthz` and `/readyz`.
-- **Small admin UI** (separately gated by group membership): send a test
-  email, view the group-inheritance graph, and optionally edit/save the
-  declarative files from the browser (single-instance deployments only).
-- **Single static binary**, ~27MB container image, a few MB of RSS at idle.
-
-## Repository layout
-
-```
-cmd/declarativeauth   entrypoint + CLI subcommands
-internal/             application code (see "Architecture" below)
-examples/identity/    a worked users.yaml/groups.yaml example (diamond group inheritance)
-deploy/
-  docker/             production Dockerfile
-  compose/            docker-compose quickstart stack + the Go toolchain dev container
-  kubernetes/         Deployment/Service/ConfigMap/Secret/Certificate/CNPG-Cluster examples
-examples/.env.example every DECLARATIVEAUTH_* environment variable, with defaults/docs
-test/integration/     integration tests (real Postgres, real SMTP, real LDAP client)
-```
+- **Admin UI** (gated by a group setting): send test emails, view the 
+  group-inheritance graph, and optionally edit/save the declarative files from the browser
+  (can be disabled, single-instance deployments only (might change in the future)).
 
 ## Try it out
 
@@ -198,6 +164,20 @@ user a first-password-setup link -- it reuses the identical token/email
 flow as a normal password reset, so there's no separate "admin sets a raw
 password" code path.
 
+## Repository layout
+
+```
+cmd/declarativeauth   entrypoint + CLI subcommands
+internal/             application code (see "Architecture" below)
+examples/identity/    a worked users.yaml/groups.yaml example (diamond group inheritance)
+deploy/
+  docker/             production Dockerfile
+  compose/            docker-compose quickstart stack + the Go toolchain dev container
+  kubernetes/         Deployment/Service/ConfigMap/Secret/Certificate/CNPG-Cluster examples
+examples/.env.example every DECLARATIVEAUTH_* environment variable, with defaults/docs
+test/integration/     integration tests (real Postgres, real SMTP, real LDAP client)
+```
+
 ## Architecture
 
 ```
@@ -285,11 +265,3 @@ Two independent layers, since neither can catch everything alone:
 See [CONTRIBUTING.md](CONTRIBUTING.md) for local dev setup (a WSL/Docker dev
 container is used since this was built without a local Go toolchain),
 running tests, and adding migrations.
-
-## Deferred extensions
-
-Not implemented yet, but the schema/architecture anticipates them:
-
-- Authenticator-app TOTP MFA with recovery codes (`mfa_totp_secrets` /
-  `mfa_recovery_codes` tables already exist, unused).
-- Passkey/WebAuthn support on the OIDC login page.
