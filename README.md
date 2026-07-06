@@ -69,16 +69,16 @@ docker compose -f deploy/compose/docker-compose.yaml up -d --build
 
 | What | Where |
 |---|---|
+| Home page (name/email, passkeys) | http://localhost:8080/ |
 | Login page | http://localhost:8080/login |
-| Home page (name/email, admin link, passkeys) | http://localhost:8080/ |
 | Password reset | http://localhost:8080/reset |
-| Caught emails (mailcatcher) | http://localhost:1080 |
 | Admin UI | http://localhost:8080/admin |
+| Caught emails (mailcatcher) | http://localhost:1080 |
 | Prometheus metrics | http://localhost:9090/metrics |
 | LDAP | `ldap://localhost:1389` |
 
-The example identity declares users but no passwords (passwords never
-live in YAML). Set one:
+The example identity declares users but no passwords.
+You can either use the forgot password form, or set one via CLI:
 
 ```sh
 docker compose -f deploy/compose/docker-compose.yaml exec declarativeauth \
@@ -86,9 +86,6 @@ docker compose -f deploy/compose/docker-compose.yaml exec declarativeauth \
   -dsn "postgres://declarativeauth:declarativeauth@postgres:5432/declarativeauth?sslmode=disable" \
   -username jsmith -password Secret123!
 ```
-
-(this reads the pepper from `DECLARATIVEAUTH_PASSWORD_PEPPER`, already set
-via `deploy/compose/.env`)
 
 Then log in at http://localhost:8080/login with `jsmith` / `Secret123!`,
 or query LDAP directly:
