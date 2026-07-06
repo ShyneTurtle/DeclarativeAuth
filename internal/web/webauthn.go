@@ -5,7 +5,6 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"time"
 
@@ -256,7 +255,6 @@ func (h *PasskeyHandlers) handleLoginFinish(w http.ResponseWriter, r *http.Reque
 		u, exists := snap.Users[resolvedUsername]
 		if !exists || !u.Enabled {
 			success = false
-			err = errors.New("account disabled or unknown")
 		}
 	}
 	if h.OnLoginResult != nil {
