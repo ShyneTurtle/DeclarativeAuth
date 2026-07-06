@@ -8,6 +8,7 @@ package admin
 import (
 	"embed"
 	"html/template"
+	"log/slog"
 	"net/http"
 
 	"declarativeauth/internal/identity"
@@ -47,6 +48,8 @@ type Handlers struct {
 	}
 
 	OnSMTPTest func(success bool)
+
+	Logger *slog.Logger
 }
 
 // NewMux builds the http.ServeMux for /admin/*, with every route gated

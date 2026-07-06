@@ -3,6 +3,7 @@ package auth
 import (
 	"context"
 	"errors"
+	"log/slog"
 
 	"declarativeauth/internal/identity"
 	"declarativeauth/internal/store"
@@ -41,6 +42,7 @@ type Authenticator struct {
 	Credentials *store.CredentialStore
 	Hasher      *Hasher
 	RateLimiter *RateLimiter
+	Logger      *slog.Logger
 }
 
 // Authenticate verifies an identifier (username or email) plus password
@@ -106,6 +108,8 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 
 func (a *Authenticator) recordFailure(ctx context.Context, username, sourceIP string) {
 	if a.RateLimiter != nil {
-		_ = a.RateLimiter.RecordFailure(ctx, username, sourceIP)
+		if err := a.RateLimiter.RecordFailure(ctx, username, sourceIP); err != nil && a.Logger != nil {
+			a.Logger.Error("failed to record login failure for rate limiting", "component", "auth", "error", err)
+		}
 	}
 }

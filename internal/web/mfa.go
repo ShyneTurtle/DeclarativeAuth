@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/big"
 	"net/http"
 	"time"
@@ -56,6 +57,9 @@ func (h *Handlers) startMFAChallenge(w http.ResponseWriter, r *http.Request, sec
 
 	target := h.Snapshot().Users[username]
 	if err := h.MFAMail.SendMFACode(target.Email, code); err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("failed to send MFA code email", "component", "web", "username", username, "error", err)
+		}
 		return err
 	}
 
@@ -90,6 +94,7 @@ type MFAHandlers struct {
 	TrustedProxies *auth.TrustedProxies
 	Audit          *store.AuditStore
 	CodeTTL        time.Duration
+	Logger         *slog.Logger
 }
 
 // RegisterRoutes mounts /login/mfa, /login/mfa/resend, and /account/mfa.
@@ -146,7 +151,9 @@ func (h *MFAHandlers) handleVerifySubmit(w http.ResponseWriter, r *http.Request,
 		}
 		// store.ErrInvalidCode: challenge is still live, let them retry.
 		if h.Audit != nil {
-			_ = h.Audit.Write(ctx, store.AuditEvent{EventType: "oidc_login_mfa_failure", Detail: "invalid_code", UserAgent: r.UserAgent()})
+			if err := h.Audit.Write(ctx, store.AuditEvent{EventType: "oidc_login_mfa_failure", Detail: "invalid_code", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+				h.Logger.Error("audit write failed", "component", "web", "event_type", "oidc_login_mfa_failure", "error", err)
+			}
 		}
 		render(w, mfaVerifyTmpl, mfaVerifyPageData{Title: "Verify your identity", Error: "Incorrect code, please try again.", CSRFToken: IssueCSRFToken(w, r, secure)})
 		return
@@ -154,7 +161,9 @@ func (h *MFAHandlers) handleVerifySubmit(w http.ResponseWriter, r *http.Request,
 
 	clearMFAPendingCookie(w)
 	if h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: ch.Username, EventType: "oidc_login_success", Detail: "mfa_verified", UserAgent: r.UserAgent()})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: ch.Username, EventType: "oidc_login_success", Detail: "mfa_verified", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", "oidc_login_success", "error", err)
+		}
 	}
 	sourceIP := h.TrustedProxies.ClientIP(r).String()
 	if err := h.Sessions.Issue(ctx, w, ch.Username, r.UserAgent(), sourceIP); err != nil {
@@ -188,7 +197,9 @@ func (h *MFAHandlers) handleResend(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	_ = h.Challenges.Delete(ctx, cookie.Value)
+	if err := h.Challenges.Delete(ctx, cookie.Value); err != nil && h.Logger != nil {
+		h.Logger.Warn("failed to delete superseded MFA challenge", "component", "web", "error", err)
+	}
 
 	code, err := generateOTP()
 	if err != nil {
@@ -207,6 +218,9 @@ func (h *MFAHandlers) handleResend(w http.ResponseWriter, r *http.Request) {
 	}
 	target := h.Snapshot().Users[ch.Username]
 	if err := h.Mail.SendMFACode(target.Email, code); err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("failed to send MFA code email", "component", "web", "username", ch.Username, "error", err)
+		}
 		http.Error(w, "failed to send email: "+err.Error(), http.StatusBadGateway)
 		return
 	}
@@ -249,7 +263,9 @@ func (h *MFAHandlers) handleSettings(w http.ResponseWriter, r *http.Request) {
 		if enabled {
 			detail = "enabled"
 		}
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "mfa_self_service_" + detail, UserAgent: r.UserAgent()})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "mfa_self_service_" + detail, UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", "mfa_self_service_"+detail, "error", err)
+		}
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }

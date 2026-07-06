@@ -35,6 +35,9 @@ func (h *Handlers) handleSMTPTest(w http.ResponseWriter, r *http.Request, userna
 			h.OnSMTPTest(success)
 		}
 		if err != nil {
+			if h.Logger != nil {
+				h.Logger.Error("SMTP test send failed", "component", "admin", "to", to, "error", err)
+			}
 			data.Error = "Failed to send: " + err.Error()
 		} else {
 			data.Result = "Test email sent to " + to + "."

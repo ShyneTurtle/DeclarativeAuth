@@ -2,6 +2,7 @@ package web
 
 import (
 	"context"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"strings"
@@ -29,6 +30,7 @@ type ResetHandlers struct {
 	TTL      time.Duration
 	BaseURL  string // e.g. "https://auth.example.com", used to build the emailed link
 	Policy   auth.PasswordPolicy
+	Logger   *slog.Logger
 }
 
 // CurrentUser resolves the requester's authenticated username from the web
@@ -87,11 +89,16 @@ func (h *ResetHandlers) handleSendSetupLink(w http.ResponseWriter, r *http.Reque
 	}
 	link := h.BaseURL + "/reset/confirm?token=" + raw
 	if err := h.Mail.SendReset(target.Email, link, humanDuration(h.ttl())); err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("failed to send password setup email", "component", "web", "username", username, "error", err)
+		}
 		http.Error(w, "failed to send email: "+err.Error(), http.StatusBadGateway)
 		return
 	}
 	if h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "password_reset_requested", Detail: "admin-triggered by " + requester})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "password_reset_requested", Detail: "admin-triggered by " + requester}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", "password_reset_requested", "error", err)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -146,9 +153,16 @@ func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request
 			// The link always goes to the user's declared email, never to
 			// whatever the requester typed -- so typing a username still
 			// sends the link to its owner's real address, not nowhere.
-			_ = h.Mail.SendReset(target.Email, link, humanDuration(h.ttl()))
+			// The response to the caller never reflects send failure here
+			// (always the same page, to avoid user enumeration -- see
+			// below), so this is the only place such a failure surfaces.
+			if err := h.Mail.SendReset(target.Email, link, humanDuration(h.ttl())); err != nil && h.Logger != nil {
+				h.Logger.Error("failed to send password reset email", "component", "web", "username", username, "error", err)
+			}
 			if h.Audit != nil {
-				_ = h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "password_reset_requested"})
+				if err := h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "password_reset_requested"}); err != nil && h.Logger != nil {
+					h.Logger.Error("audit write failed", "component", "web", "event_type", "password_reset_requested", "error", err)
+				}
 			}
 		}
 	}
@@ -246,7 +260,9 @@ func (h *ResetHandlers) handleResetConfirmSubmit(w http.ResponseWriter, r *http.
 		return
 	}
 	if h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: result.Username, EventType: "password_reset_completed"})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: result.Username, EventType: "password_reset_completed"}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", "password_reset_completed", "error", err)
+		}
 	}
 
 	// Auto-login: the reset token already proved control of the account, so

@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"html/template"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -50,6 +51,8 @@ type Handlers struct {
 	// same declarativeauth_login_attempts_total / _duration_seconds metrics
 	// without this package importing internal/metrics directly).
 	OnLoginResult func(success bool, duration time.Duration)
+
+	Logger *slog.Logger
 }
 
 // NewMux builds the http.ServeMux for the public web surface ("/", /login,
@@ -237,9 +240,11 @@ func (h *Handlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request, sec
 			if errors.As(err, &ae) {
 				reason = string(ae.Reason)
 			}
-			_ = h.Audit.Write(ctx, store.AuditEvent{
+			if err := h.Audit.Write(ctx, store.AuditEvent{
 				Username: auditUsername, EventType: eventType, Detail: reason, UserAgent: r.UserAgent(),
-			})
+			}); err != nil && h.Logger != nil {
+				h.Logger.Error("audit write failed", "component", "web", "event_type", eventType, "error", err)
+			}
 		}
 		// Generic error regardless of cause, to avoid user enumeration.
 		render(w, loginTmpl, loginPageData{Title: "Log in", Error: "Invalid username or password.", CSRFToken: IssueCSRFToken(w, r, secure), ReturnTo: returnTo})
@@ -254,9 +259,14 @@ func (h *Handlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request, sec
 		}
 		if mfaRequired {
 			if h.Audit != nil {
-				_ = h.Audit.Write(ctx, store.AuditEvent{Username: result.Username, EventType: "oidc_login_mfa_sent", UserAgent: r.UserAgent()})
+				if err := h.Audit.Write(ctx, store.AuditEvent{Username: result.Username, EventType: "oidc_login_mfa_sent", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+					h.Logger.Error("audit write failed", "component", "web", "event_type", "oidc_login_mfa_sent", "error", err)
+				}
 			}
 			if err := h.startMFAChallenge(w, r, secure, result.Username, returnTo); err != nil {
+				if h.Logger != nil {
+					h.Logger.Error("failed to send MFA challenge email", "component", "web", "username", result.Username, "error", err)
+				}
 				http.Error(w, "internal error", http.StatusInternalServerError)
 				return
 			}
@@ -266,7 +276,9 @@ func (h *Handlers) handleLoginSubmit(w http.ResponseWriter, r *http.Request, sec
 	}
 
 	if h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: auditUsername, EventType: eventType, UserAgent: r.UserAgent()})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: auditUsername, EventType: eventType, UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", eventType, "error", err)
+		}
 	}
 	if err := h.Sessions.Issue(ctx, w, result.Username, r.UserAgent(), sourceIP); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

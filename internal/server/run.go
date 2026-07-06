@@ -69,6 +69,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				cfg.RateLimit.Window.Std(),
 			),
 		},
+		Logger: logger,
 	}
 	auditStore := &store.AuditStore{Pool: pool}
 	hasher := &auth.Hasher{Pepper: []byte(pepper), Params: auth.DefaultArgon2Params}
@@ -109,9 +110,11 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 					reg.LDAPBindsTotal.WithLabelValues(result).Inc()
 					reg.LoginAttemptsTotal.WithLabelValues("ldap", result).Inc()
 				}
-				_ = auditStore.Write(context.Background(), store.AuditEvent{
+				if err := auditStore.Write(context.Background(), store.AuditEvent{
 					Username: username, EventType: eventType, SourceIP: net.ParseIP(sourceIP), Detail: reason,
-				})
+				}); err != nil {
+					logger.Error("audit write failed", "component", "ldapserver", "event_type", eventType, "error", err)
+				}
 			},
 			OnSearch: func(sourceIP string) {
 				if reg != nil {
@@ -130,6 +133,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		sessions := &web.SessionManager{
 			Sessions: sessionStore,
 			Secure:   cfg.OIDC.TLS.Enabled,
+			Logger:   logger,
 		}
 		keys, err := oidcserver.NewKeySet()
 		if err != nil {
@@ -160,6 +164,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				reg.LoginAttemptsTotal.WithLabelValues("oidc", result).Inc()
 				reg.LoginDurationSeconds.WithLabelValues("oidc").Observe(d.Seconds())
 			},
+			Logger: logger,
 		}
 
 		webMux := webHandlers.NewMux()
@@ -176,6 +181,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				MinLength:   cfg.PasswordPolicy.MinLength,
 				MinStrength: cfg.PasswordPolicy.MinStrength,
 			},
+			Logger: logger,
 		}
 		resetHandlers.RegisterRoutes(webMux, trustedProxies, sessions.CurrentUser, cfg.AdminUI.AdminGroup)
 
@@ -187,6 +193,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Sessions:       sessions,
 			TrustedProxies: trustedProxies,
 			Audit:          auditStore,
+			Logger:         logger,
 		}
 		mfaHandlers.RegisterRoutes(webMux)
 
@@ -220,6 +227,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 						reg.LoginAttemptsTotal.WithLabelValues("passkey", result).Inc()
 						reg.LoginDurationSeconds.WithLabelValues("passkey").Observe(d.Seconds())
 					},
+					Logger: logger,
 				}
 				passkeyHandlers.RegisterRoutes(webMux)
 				webHandlers.Passkeys = webauthnCredentials
@@ -246,6 +254,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 					}
 					reg.SMTPTestTotal.WithLabelValues(result).Inc()
 				},
+				Logger: logger,
 			}
 			adminMux := adminHandlers.NewMux()
 			webMux.Handle("/admin", adminMux)
@@ -269,7 +278,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		httpSrv := &http.Server{Addr: cfg.OIDC.ListenAddr, Handler: mux, TLSConfig: tlsCfg}
 		g.Go(func() error {
 			logger.Info("oidc/web listener started", "component", "oidcserver", "addr", cfg.OIDC.ListenAddr, "tls", tlsCfg != nil)
-			return serveHTTPUntilDone(gctx, httpSrv, tlsCfg != nil)
+			return serveHTTPUntilDone(gctx, httpSrv, tlsCfg != nil, logger)
 		})
 	}
 
@@ -279,7 +288,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		metricsSrv := &http.Server{Addr: cfg.Metrics.ListenAddr, Handler: mux}
 		g.Go(func() error {
 			logger.Info("metrics listener started", "component", "metrics", "addr", cfg.Metrics.ListenAddr)
-			return serveHTTPUntilDone(gctx, metricsSrv, false)
+			return serveHTTPUntilDone(gctx, metricsSrv, false, logger)
 		})
 
 		g.Go(func() error { return reportActiveSessions(gctx, sessionStore, reg) })
@@ -307,7 +316,7 @@ func readyzHandler(pool *pgxpool.Pool) http.HandlerFunc {
 	}
 }
 
-func serveHTTPUntilDone(ctx context.Context, srv *http.Server, useTLS bool) error {
+func serveHTTPUntilDone(ctx context.Context, srv *http.Server, useTLS bool, logger *slog.Logger) error {
 	errCh := make(chan error, 1)
 	go func() {
 		var err error
@@ -322,7 +331,9 @@ func serveHTTPUntilDone(ctx context.Context, srv *http.Server, useTLS bool) erro
 	case <-ctx.Done():
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		_ = srv.Shutdown(shutdownCtx)
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			logger.Error("graceful shutdown failed", "component", "server", "addr", srv.Addr, "error", err)
+		}
 		return nil
 	case err := <-errCh:
 		if err == http.ErrServerClosed {

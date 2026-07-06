@@ -10,6 +10,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/hex"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -28,6 +29,7 @@ type SessionManager struct {
 	Sessions *store.SessionStore
 	Secure   bool // set the cookie's Secure flag (true when serving over HTTPS, incl. reverse-proxy-TLS mode)
 	TTL      time.Duration
+	Logger   *slog.Logger
 }
 
 // Issue creates a new session row and sets the session cookie on w.
@@ -76,7 +78,9 @@ func (m *SessionManager) CurrentUser(r *http.Request) (string, bool) {
 // Clear revokes the session and expires the cookie ("log out").
 func (m *SessionManager) Clear(w http.ResponseWriter, r *http.Request) {
 	if sess, _, ok := m.lookup(r); ok {
-		_ = m.Sessions.Revoke(r.Context(), sess.ID)
+		if err := m.Sessions.Revoke(r.Context(), sess.ID); err != nil && m.Logger != nil {
+			m.Logger.Error("failed to revoke session on logout", "component", "web", "error", err)
+		}
 	}
 	http.SetCookie(w, &http.Cookie{
 		Name: sessionCookieName, Value: "", Path: "/", MaxAge: -1,

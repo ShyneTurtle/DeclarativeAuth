@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -54,6 +55,8 @@ type PasskeyHandlers struct {
 	// so passkey logins feed the same declarativeauth_login_attempts_total /
 	// _duration_seconds metrics under protocol="passkey".
 	OnLoginResult func(success bool, duration time.Duration)
+
+	Logger *slog.Logger
 }
 
 // RegisterRoutes mounts the register/login ceremony endpoints on mux.
@@ -169,7 +172,9 @@ func (h *PasskeyHandlers) handleRegisterFinish(w http.ResponseWriter, r *http.Re
 		return
 	}
 	if h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "passkey_registered", Detail: name, UserAgent: r.UserAgent()})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "passkey_registered", Detail: name, UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", "passkey_registered", "error", err)
+		}
 	}
 	w.WriteHeader(http.StatusOK)
 }
@@ -201,7 +206,9 @@ func (h *PasskeyHandlers) handleDelete(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "passkey_deleted", UserAgent: r.UserAgent()})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: username, EventType: "passkey_deleted", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", "passkey_deleted", "error", err)
+		}
 	}
 	http.Redirect(w, r, "/", http.StatusSeeOther)
 }
@@ -262,18 +269,29 @@ func (h *PasskeyHandlers) handleLoginFinish(w http.ResponseWriter, r *http.Reque
 	}
 	if !success {
 		if h.Audit != nil {
-			_ = h.Audit.Write(ctx, store.AuditEvent{Username: resolvedUsername, EventType: "passkey_login_failure", UserAgent: r.UserAgent()})
+			if err := h.Audit.Write(ctx, store.AuditEvent{Username: resolvedUsername, EventType: "passkey_login_failure", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+				h.Logger.Error("audit write failed", "component", "web", "event_type", "passkey_login_failure", "error", err)
+			}
 		}
 		http.Error(w, "passkey login failed", http.StatusUnauthorized)
 		return
 	}
 
 	wu, _ := authedUser.(*webauthnUser)
-	if err := h.Credentials.UpdateCredential(ctx, *cred); err != nil && h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: wu.username, EventType: "passkey_credential_update_failed", Detail: err.Error()})
+	if err := h.Credentials.UpdateCredential(ctx, *cred); err != nil {
+		if h.Logger != nil {
+			h.Logger.Error("failed to update passkey credential (sign count)", "component", "web", "username", wu.username, "error", err)
+		}
+		if h.Audit != nil {
+			if err := h.Audit.Write(ctx, store.AuditEvent{Username: wu.username, EventType: "passkey_credential_update_failed", Detail: err.Error()}); err != nil && h.Logger != nil {
+				h.Logger.Error("audit write failed", "component", "web", "event_type", "passkey_credential_update_failed", "error", err)
+			}
+		}
 	}
 	if h.Audit != nil {
-		_ = h.Audit.Write(ctx, store.AuditEvent{Username: wu.username, EventType: "passkey_login_success", UserAgent: r.UserAgent()})
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: wu.username, EventType: "passkey_login_success", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+			h.Logger.Error("audit write failed", "component", "web", "event_type", "passkey_login_success", "error", err)
+		}
 	}
 
 	sourceIP := h.TrustedProxies.ClientIP(r).String()
