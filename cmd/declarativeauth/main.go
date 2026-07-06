@@ -22,6 +22,8 @@ func main() {
 		err = runValidateConfig(os.Args[2:])
 	case "admin":
 		err = runAdmin(os.Args[2:])
+	case "healthcheck":
+		err = runHealthcheck(os.Args[2:])
 	case "-h", "--help", "help":
 		usage()
 		return
@@ -45,6 +47,7 @@ Commands:
   migrate           Apply pending Postgres migrations and exit
   validate-config   Validate the declarative users/groups config and exit
   admin             Admin escape-hatch subcommands (set-password)
+  healthcheck       Check this process's own /readyz over loopback and exit 0/1 (used by the image's HEALTHCHECK)
 
 serve is configured entirely through DECLARATIVEAUTH_* environment
 variables -- there is no config file. See .env.example at the repo root
