@@ -46,6 +46,12 @@ type Config struct {
 	// catch a protocol-level hang after the TCP connection is already up
 	// (e.g. an ImplicitTLS mismatch). Defaults to 10s if zero.
 	Timeout time.Duration
+	// InsecureSkipVerify disables TLS certificate verification (both for
+	// ImplicitTLS and STARTTLS). Only useful against a relay with a
+	// self-signed or otherwise unverifiable cert -- it makes the connection
+	// vulnerable to MITM, so prefer fixing the cert/trust store instead
+	// wherever that's an option.
+	InsecureSkipVerify bool
 }
 
 // Client sends plain+HTML emails via SMTP.
@@ -67,7 +73,7 @@ func (c *Client) Send(to, subject, textBody, htmlBody string) error {
 	var conn net.Conn
 	var err error
 	if c.Config.ImplicitTLS {
-		conn, err = tls.DialWithDialer(dialer, "tcp", addr, &tls.Config{ServerName: c.Config.Host})
+		conn, err = tls.DialWithDialer(dialer, "tcp", addr, c.tlsConfig())
 	} else {
 		conn, err = dialer.Dial("tcp", addr)
 	}
@@ -100,8 +106,7 @@ func (c *Client) Send(to, subject, textBody, htmlBody string) error {
 
 	if !c.Config.ImplicitTLS {
 		if ok, _ := client.Extension("STARTTLS"); ok {
-			tlsConfig := &tls.Config{ServerName: c.Config.Host}
-			if err := client.StartTLS(tlsConfig); err != nil {
+			if err := client.StartTLS(c.tlsConfig()); err != nil {
 				return fmt.Errorf("starttls: %w", err)
 			}
 		}
@@ -136,6 +141,13 @@ func (c *Client) Send(to, subject, textBody, htmlBody string) error {
 		return err
 	}
 	return client.Quit()
+}
+
+func (c *Client) tlsConfig() *tls.Config {
+	return &tls.Config{
+		ServerName:         c.Config.Host,
+		InsecureSkipVerify: c.Config.InsecureSkipVerify,
+	}
 }
 
 func extractAddr(fromHeader string) string {

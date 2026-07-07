@@ -150,6 +150,11 @@ type SMTPConfig struct {
 	// catch a protocol-level hang like ImplicitTLS mismatched against the
 	// server. Defaults to 10s (see EnvSMTPTimeout) if zero.
 	Timeout Duration
+	// InsecureSkipVerify disables TLS certificate verification for the SMTP
+	// connection (ImplicitTLS and STARTTLS alike). Only for relays with a
+	// self-signed or otherwise unverifiable cert you can't fix the trust
+	// store for -- it makes the connection vulnerable to MITM.
+	InsecureSkipVerify bool
 }
 
 type MetricsConfig struct {

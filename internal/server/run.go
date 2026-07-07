@@ -79,6 +79,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From,
 		HeloDomain:  cfg.SMTP.HeloDomain,
 		ImplicitTLS: cfg.SMTP.ImplicitTLS, Timeout: cfg.SMTP.Timeout.Std(),
+		InsecureSkipVerify: cfg.SMTP.InsecureSkipVerify,
 	}}
 
 	g, gctx := errgroup.WithContext(ctx)

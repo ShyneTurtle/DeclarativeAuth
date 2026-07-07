@@ -62,6 +62,9 @@ func TestLoadServerConfigFromEnv_Defaults(t *testing.T) {
 	if cfg.SMTP.Timeout.Std() != 10*time.Second {
 		t.Errorf("unexpected SMTP timeout default: %v", cfg.SMTP.Timeout.Std())
 	}
+	if cfg.SMTP.InsecureSkipVerify {
+		t.Error("expected SMTP InsecureSkipVerify to default false")
+	}
 }
 
 func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
@@ -79,6 +82,7 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvSMTPImplicitTLS, "true")
 	t.Setenv(EnvSMTPTimeout, "30s")
 	t.Setenv(EnvSMTPHeloDomain, "mail.example.com")
+	t.Setenv(EnvSMTPInsecureSkipVerify, "true")
 
 	cfg, err := LoadServerConfigFromEnv()
 	if err != nil {
@@ -123,6 +127,9 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	}
 	if cfg.SMTP.HeloDomain != "mail.example.com" {
 		t.Errorf("unexpected SMTP HELO domain: %q", cfg.SMTP.HeloDomain)
+	}
+	if !cfg.SMTP.InsecureSkipVerify {
+		t.Error("expected SMTP InsecureSkipVerify=true override to apply")
 	}
 }
 
