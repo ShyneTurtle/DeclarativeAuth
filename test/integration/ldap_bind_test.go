@@ -15,8 +15,6 @@ import (
 	goldap "github.com/go-ldap/ldap/v3"
 )
 
-const testPepper = "integration-test-pepper"
-
 func startLDAPServer(t *testing.T, identityFixture string) (addr string, holder *config.SnapshotHolder) {
 	t.Helper()
 	pool := setupPool(t)
@@ -28,7 +26,7 @@ func startLDAPServer(t *testing.T, identityFixture string) (addr string, holder 
 	}
 	holder.Set(snap)
 
-	authenticator := buildAuthenticator(pool, holder, testPepper, defaultLockoutParams())
+	authenticator := buildAuthenticator(pool, holder, defaultLockoutParams())
 
 	// Seed jsmith's password directly via the same credential store the
 	// server reads from.

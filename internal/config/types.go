@@ -55,10 +55,6 @@ type UserSpec struct {
 // above): identity is "who exists", checked into a repo and hot-reloaded;
 // this is "how the process runs", set once at process start like any
 // 12-factor app.
-//
-// The Argon2id HMAC pepper is deliberately not a field here: it's always
-// read from the fixed auth.PepperEnvVar environment variable, never from a
-// configurable-name field, so there's exactly one place to look for it.
 type ServerConfig struct {
 	Logging        LoggingConfig
 	Database       DatabaseConfig

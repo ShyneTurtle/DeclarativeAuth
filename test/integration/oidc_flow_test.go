@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/metrics"
 	"declarativeauth/internal/server"
@@ -45,7 +44,6 @@ func startFullServer(t *testing.T) (issuer string, holder *config.SnapshotHolder
 			BackoffMax: config.Duration(15 * time.Minute), Window: config.Duration(24 * time.Hour),
 		},
 	}
-	t.Setenv(auth.PepperEnvVar, "oidc-test-pepper")
 
 	holder = &config.SnapshotHolder{}
 	snap, err := config.LoadIdentity(fixturePath("valid"))
@@ -60,7 +58,7 @@ func startFullServer(t *testing.T) (issuer string, holder *config.SnapshotHolder
 	}
 
 	// Seed jsmith's password via the credential store directly.
-	seedPassword(t, pgxPool, "jsmith", "Secret123!", "oidc-test-pepper")
+	seedPassword(t, pgxPool, "jsmith", "Secret123!")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

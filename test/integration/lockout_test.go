@@ -20,7 +20,7 @@ func TestLockout_LocksAfterThresholdAndClearsOnSuccess(t *testing.T) {
 	holder.Set(snap)
 
 	params := defaultLockoutParams() // threshold=3, backoffBase=200ms
-	authenticator := buildAuthenticator(pool, holder, testPepper, params)
+	authenticator := buildAuthenticator(pool, holder, params)
 
 	encoded, _ := authenticator.Hasher.Hash("Secret123!")
 	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded); err != nil {

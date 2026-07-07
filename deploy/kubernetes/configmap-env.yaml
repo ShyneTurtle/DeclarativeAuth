@@ -1,6 +1,6 @@
 # Non-secret DECLARATIVEAUTH_* environment variables, consumed via
 # `envFrom: configMapRef` in deployment.yaml. Secrets (DB password, SMTP
-# password, the Argon2 pepper) live in secret-example.yaml instead -- see
+# password) live in secret-example.yaml instead -- see
 # examples/.env.example for the full variable reference.
 apiVersion: v1
 kind: ConfigMap

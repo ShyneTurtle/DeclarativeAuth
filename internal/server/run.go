@@ -9,7 +9,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"os"
 	"time"
 
 	"declarativeauth/internal/admin"
@@ -34,11 +33,6 @@ import (
 // OIDC/web, metrics, TLS, admin) adds its listener here without reworking
 // this seam.
 func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotHolder, pool *pgxpool.Pool, logger *slog.Logger, reg *metrics.Registry) error {
-	pepper := os.Getenv(auth.PepperEnvVar)
-	if pepper == "" {
-		return fmt.Errorf("%s is not set", auth.PepperEnvVar)
-	}
-
 	warnInsecureConfig(cfg, logger)
 
 	trustedCIDRs := append([]string{}, cfg.Network.TrustedProxies...)
@@ -59,7 +53,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 	authenticator := &auth.Authenticator{
 		Snapshot:    holder.Get,
 		Credentials: &store.CredentialStore{Pool: pool},
-		Hasher:      &auth.Hasher{Pepper: []byte(pepper), Params: auth.DefaultArgon2Params},
+		Hasher:      &auth.Hasher{Params: auth.DefaultArgon2Params},
 		RateLimiter: &auth.RateLimiter{
 			Lockouts: &store.LockoutStore{Pool: pool},
 			Params: auth.ParamsFromConfig(
@@ -72,7 +66,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		Logger: logger,
 	}
 	auditStore := &store.AuditStore{Pool: pool}
-	hasher := &auth.Hasher{Pepper: []byte(pepper), Params: auth.DefaultArgon2Params}
+	hasher := &auth.Hasher{Params: auth.DefaultArgon2Params}
 
 	mailClient := &mail.Client{Config: mail.Config{
 		Host: cfg.SMTP.Host, Port: cfg.SMTP.Port,

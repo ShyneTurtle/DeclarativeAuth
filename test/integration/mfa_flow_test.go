@@ -92,7 +92,7 @@ func TestMFAFlow_SelfServiceEnableRequiresCodeAtLogin(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	seedPassword(t, pool, "jsmith", "CorrectHorse123!", "reset-test-pepper")
+	seedPassword(t, pool, "jsmith", "CorrectHorse123!")
 
 	settings := &store.UserMFASettingsStore{Pool: pool}
 	if err := settings.SetEnabled(context.Background(), "jsmith", true); err != nil {
@@ -170,7 +170,7 @@ func TestMFAFlow_NotRequiredSkipsChallenge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	seedPassword(t, pool, "admin", "AdminSecret123!", "reset-test-pepper")
+	seedPassword(t, pool, "admin", "AdminSecret123!")
 
 	jar, _ := cookiejar.New(nil)
 	client := &http.Client{Jar: jar}

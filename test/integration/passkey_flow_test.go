@@ -15,7 +15,6 @@ import (
 	"testing"
 	"time"
 
-	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/metrics"
 	"declarativeauth/internal/server"
@@ -56,7 +55,6 @@ func startFullServerWithWebAuthn(t *testing.T) (issuer string, rp virtualwebauth
 			RPDisplayName: "DeclarativeAuth Test",
 		},
 	}
-	t.Setenv(auth.PepperEnvVar, "passkey-test-pepper")
 
 	holder := &config.SnapshotHolder{}
 	snap, err := config.LoadIdentity(fixturePath("valid"))
@@ -65,7 +63,7 @@ func startFullServerWithWebAuthn(t *testing.T) (issuer string, rp virtualwebauth
 	}
 	holder.Set(snap)
 
-	seedPassword(t, pool, "jsmith", "Secret123!", "passkey-test-pepper")
+	seedPassword(t, pool, "jsmith", "Secret123!")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/metrics"
 	"declarativeauth/internal/server"
@@ -54,7 +53,6 @@ func startAdminServer(t *testing.T, configEditorEnabled bool) (issuer string, id
 			ConfigEditor: config.ConfigEditorConfig{Enabled: configEditorEnabled},
 		},
 	}
-	t.Setenv(auth.PepperEnvVar, "admin-test-pepper")
 
 	holder := &config.SnapshotHolder{}
 	snap, err := config.LoadIdentity(identityDir)
@@ -63,8 +61,8 @@ func startAdminServer(t *testing.T, configEditorEnabled bool) (issuer string, id
 	}
 	holder.Set(snap)
 
-	seedPassword(t, pool, "admin", "AdminSecret1!", "admin-test-pepper")
-	seedPassword(t, pool, "jsmith", "Secret123!", "admin-test-pepper")
+	seedPassword(t, pool, "admin", "AdminSecret1!")
+	seedPassword(t, pool, "jsmith", "Secret123!")
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

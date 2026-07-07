@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/metrics"
 	"declarativeauth/internal/server"
@@ -109,8 +108,7 @@ func TestHA_SessionValidAcrossInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	t.Setenv(auth.PepperEnvVar, "ha-test-pepper")
-	seedPassword(t, pool, "jsmith", "Secret123!", "ha-test-pepper")
+	seedPassword(t, pool, "jsmith", "Secret123!")
 
 	instanceA := newHAInstance(t, dsn, "", nil)
 	instanceB := newHAInstance(t, dsn, "", nil)
@@ -158,8 +156,7 @@ func TestHA_LockoutSharedAcrossInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	t.Setenv(auth.PepperEnvVar, "ha-test-pepper")
-	seedPassword(t, pool, "admin", "Correct123!", "ha-test-pepper")
+	seedPassword(t, pool, "admin", "Correct123!")
 
 	instanceA := newHAInstance(t, dsn, "", nil)
 	instanceB := newHAInstance(t, dsn, "", nil)
@@ -227,8 +224,7 @@ func TestHA_WebAuthnCeremonyHandoffAcrossInstances(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	t.Setenv(auth.PepperEnvVar, "ha-test-pepper")
-	seedPassword(t, pool, "jsmith", "Secret123!", "ha-test-pepper")
+	seedPassword(t, pool, "jsmith", "Secret123!")
 
 	// Instance A's own address doubles as the shared public RP origin both
 	// instances are configured with -- exactly as a real deployment would

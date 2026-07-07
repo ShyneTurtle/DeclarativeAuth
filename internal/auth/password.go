@@ -5,9 +5,7 @@
 package auth
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
@@ -16,16 +14,7 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-// PepperEnvVar is the single, fixed environment variable name DeclarativeAuth
-// reads the Argon2id HMAC pepper from. It's not configurable -- a fixed,
-// clearly-namespaced name is one less place for an operator to get the
-// wiring wrong between the config file and their secret manager.
-// Generate a value with: openssl rand -base64 32
-const PepperEnvVar = "DECLARATIVEAUTH_PASSWORD_PEPPER"
-
-// Argon2Params are OWASP-minimum-recommended and deliberately not weakened
-// to compensate for the HMAC pepper pre-hash step (see HashPassword) — the
-// pepper is defense-in-depth against DB compromise, not a latency trade.
+// Argon2Params are OWASP-minimum-recommended.
 type Argon2Params struct {
 	Memory      uint32 // KiB
 	Iterations  uint32
@@ -44,18 +33,9 @@ var DefaultArgon2Params = Argon2Params{
 	KeyLength:   32,
 }
 
-// Hasher hashes and verifies passwords using HMAC-SHA256(password, pepper)
-// -> Argon2id. The pepper is a server-side secret never stored in Postgres
-// or the declarative YAML.
+// Hasher hashes and verifies passwords using Argon2id.
 type Hasher struct {
-	Pepper []byte
 	Params Argon2Params
-}
-
-func (h *Hasher) prehash(password string) []byte {
-	mac := hmac.New(sha256.New, h.Pepper)
-	mac.Write([]byte(password))
-	return mac.Sum(nil)
 }
 
 // Hash returns a PHC-formatted argon2id hash string.
@@ -64,8 +44,7 @@ func (h *Hasher) Hash(password string) (string, error) {
 	if _, err := rand.Read(salt); err != nil {
 		return "", err
 	}
-	pre := h.prehash(password)
-	key := argon2.IDKey(pre, salt, h.Params.Iterations, h.Params.Memory, h.Params.Parallelism, h.Params.KeyLength)
+	key := argon2.IDKey([]byte(password), salt, h.Params.Iterations, h.Params.Memory, h.Params.Parallelism, h.Params.KeyLength)
 
 	return fmt.Sprintf("$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version, h.Params.Memory, h.Params.Iterations, h.Params.Parallelism,
@@ -81,8 +60,7 @@ func (h *Hasher) Verify(password, encoded string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	pre := h.prehash(password)
-	candidate := argon2.IDKey(pre, salt, params.Iterations, params.Memory, params.Parallelism, uint32(len(key)))
+	candidate := argon2.IDKey([]byte(password), salt, params.Iterations, params.Memory, params.Parallelism, uint32(len(key)))
 	return subtle.ConstantTimeCompare(candidate, key) == 1, nil
 }
 

@@ -50,11 +50,11 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 	return pool
 }
 
-func buildAuthenticator(pool *pgxpool.Pool, holder *config.SnapshotHolder, pepper string, params store.LockoutParams) *auth.Authenticator {
+func buildAuthenticator(pool *pgxpool.Pool, holder *config.SnapshotHolder, params store.LockoutParams) *auth.Authenticator {
 	return &auth.Authenticator{
 		Snapshot:    holder.Get,
 		Credentials: &store.CredentialStore{Pool: pool},
-		Hasher:      &auth.Hasher{Pepper: []byte(pepper), Params: auth.DefaultArgon2Params},
+		Hasher:      &auth.Hasher{Params: auth.DefaultArgon2Params},
 		RateLimiter: &auth.RateLimiter{
 			Lockouts: &store.LockoutStore{Pool: pool},
 			Params:   params,
@@ -76,9 +76,9 @@ func poolFor(t *testing.T, dsn string) (*pgxpool.Pool, error) {
 	return store.Open(context.Background(), dsn, 5)
 }
 
-func seedPassword(t *testing.T, pool *pgxpool.Pool, username, password, pepper string) {
+func seedPassword(t *testing.T, pool *pgxpool.Pool, username, password string) {
 	t.Helper()
-	hasher := &auth.Hasher{Pepper: []byte(pepper), Params: auth.DefaultArgon2Params}
+	hasher := &auth.Hasher{Params: auth.DefaultArgon2Params}
 	encoded, err := hasher.Hash(password)
 	if err != nil {
 		t.Fatalf("hash password: %v", err)

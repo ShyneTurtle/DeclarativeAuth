@@ -34,11 +34,6 @@ func runAdminSetPassword(args []string) error {
 	if *username == "" || *password == "" || *dsn == "" {
 		return fmt.Errorf("-dsn (or $%s), -username and -password are required", config.EnvDatabaseDSN)
 	}
-	pepper := os.Getenv(auth.PepperEnvVar)
-	if pepper == "" {
-		return fmt.Errorf("%s is not set", auth.PepperEnvVar)
-	}
-
 	ctx := context.Background()
 	pool, err := store.Open(ctx, *dsn, 2)
 	if err != nil {
@@ -46,7 +41,7 @@ func runAdminSetPassword(args []string) error {
 	}
 	defer pool.Close()
 
-	hasher := &auth.Hasher{Pepper: []byte(pepper), Params: auth.DefaultArgon2Params}
+	hasher := &auth.Hasher{Params: auth.DefaultArgon2Params}
 	encoded, err := hasher.Hash(*password)
 	if err != nil {
 		return err

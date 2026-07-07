@@ -12,7 +12,7 @@ The goal of this project is to make a declarative, easy-to-use, performant, ligh
 - The system shall support a small webpage allowing users to log in and/or reset their password with their email.
 - The system shall feature detailed, leveled logs and prometheus metrics.
 - The system shall be standalone besides the database, not relying on any other system.
-- The system shall use hardened password hashing (Argon2id, tuned to OWASP-minimum parameters, with an HMAC-SHA256 pepper layer) — never weakened for latency, since the login SLO is already comfortably met at full security parameters.
+- The system shall use hardened password hashing (Argon2id).
 - The system shall apply a configurable brute-force login backoff (persisted, not just in-memory) shared across LDAP bind and OIDC/web login attempts.
 - The system shall provide a CLI subcommand to validate declarative users/groups config files without starting the server, reporting the resulting user and group counts on success.
 - The system shall log a summary of what changed (users/groups added, removed, modified) on every successful declarative config hot-reload.

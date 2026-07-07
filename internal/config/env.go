@@ -13,9 +13,6 @@ import (
 // Environment variable names for every ServerConfig field. There is no
 // server config FILE -- see .env.example at the repo root for the same
 // list with defaults, descriptions, and required/optional status.
-//
-// The Argon2id pepper is deliberately not among these: it's always read
-// from the fixed auth.PepperEnvVar, never from a configurable-name field.
 const (
 	EnvLogLevel  = "DECLARATIVEAUTH_LOG_LEVEL"
 	EnvLogFormat = "DECLARATIVEAUTH_LOG_FORMAT"

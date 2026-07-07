@@ -14,7 +14,6 @@ import (
 	"testing"
 	"time"
 
-	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/metrics"
 	"declarativeauth/internal/server"
@@ -130,7 +129,6 @@ func startFullServerWithSMTP(t *testing.T) (issuer string, holder *config.Snapsh
 		},
 		AdminUI: config.AdminUIConfig{AdminGroup: "admins"},
 	}
-	t.Setenv(auth.PepperEnvVar, "reset-test-pepper")
 
 	holder = &config.SnapshotHolder{}
 	snap, err := config.LoadIdentity(fixturePath("valid"))
@@ -226,7 +224,7 @@ func TestResetFlow_EndToEnd(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pool: %v", err)
 	}
-	authenticator := buildAuthenticator(pool, &config.SnapshotHolder{}, "reset-test-pepper", defaultLockoutParams())
+	authenticator := buildAuthenticator(pool, &config.SnapshotHolder{}, defaultLockoutParams())
 	snap, _ := config.LoadIdentity(fixturePath("valid"))
 	holderForCheck := &config.SnapshotHolder{}
 	holderForCheck.Set(snap)

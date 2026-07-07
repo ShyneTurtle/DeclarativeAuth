@@ -47,7 +47,7 @@ This is a lightweight & secure alternative to hard to heavy (authentik), hard to
   not enforced, but they can't opt out if they are).
 - **Persisted brute-force backoff**, shared across LDAP and OIDC/web login.
 - **Environment-variable configuration**
-- **Hardened password storage**: Argon2id with an HMAC-SHA256 pepper layer.
+- **Hardened password storage**: Argon2id.
 - **Reverse-proxy aware**: correct client IP/scheme handling for rate
   limiting and audit logs when deployed behind a load balancer.
 - **Observability**: Prometheus metrics, structured JSON logs, `/healthz` and `/readyz`.
@@ -124,10 +124,7 @@ embedded, `DECLARATIVEAUTH_SMTP_PASSWORD`) -- however you inject
 environment variables into the process (`docker run --env-file`, a
 Kubernetes Secret, a systemd `EnvironmentFile=`) is however you manage
 these secrets; DeclarativeAuth has no config-templating layer of its own
-to route around. The Argon2id password pepper is handled even more
-strictly: it's not a configurable-name field at all, always read from a
-single fixed environment variable, `DECLARATIVEAUTH_PASSWORD_PEPPER`, so
-there's exactly one place to look for how it's wired up, in any deployment.
+to route around.
 
 For a from-scratch production layout (Kubernetes + CloudNativePG), see
 [`deploy/kubernetes/`](deploy/kubernetes/) -- `configmap-env.yaml` /
