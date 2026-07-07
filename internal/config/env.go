@@ -42,11 +42,14 @@ const (
 	//   [{"clientID":"example-client","redirectURIs":["http://localhost:9000/callback"],"public":true}]
 	EnvOIDCClients = "DECLARATIVEAUTH_OIDC_CLIENTS"
 
-	EnvSMTPHost     = "DECLARATIVEAUTH_SMTP_HOST"
-	EnvSMTPPort     = "DECLARATIVEAUTH_SMTP_PORT"
-	EnvSMTPUsername = "DECLARATIVEAUTH_SMTP_USERNAME"
-	EnvSMTPPassword = "DECLARATIVEAUTH_SMTP_PASSWORD"
-	EnvSMTPFrom     = "DECLARATIVEAUTH_SMTP_FROM"
+	EnvSMTPHost        = "DECLARATIVEAUTH_SMTP_HOST"
+	EnvSMTPPort        = "DECLARATIVEAUTH_SMTP_PORT"
+	EnvSMTPUsername    = "DECLARATIVEAUTH_SMTP_USERNAME"
+	EnvSMTPPassword    = "DECLARATIVEAUTH_SMTP_PASSWORD"
+	EnvSMTPFrom        = "DECLARATIVEAUTH_SMTP_FROM"
+	EnvSMTPHeloDomain  = "DECLARATIVEAUTH_SMTP_HELO_DOMAIN"
+	EnvSMTPImplicitTLS = "DECLARATIVEAUTH_SMTP_IMPLICIT_TLS"
+	EnvSMTPTimeout     = "DECLARATIVEAUTH_SMTP_TIMEOUT"
 
 	EnvMetricsListenAddr = "DECLARATIVEAUTH_METRICS_LISTEN_ADDR"
 
@@ -123,10 +126,11 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 			},
 		},
 		SMTP: SMTPConfig{
-			Host:     os.Getenv(EnvSMTPHost),
-			Username: os.Getenv(EnvSMTPUsername),
-			Password: os.Getenv(EnvSMTPPassword),
-			From:     os.Getenv(EnvSMTPFrom),
+			Host:       os.Getenv(EnvSMTPHost),
+			Username:   os.Getenv(EnvSMTPUsername),
+			Password:   os.Getenv(EnvSMTPPassword),
+			From:       os.Getenv(EnvSMTPFrom),
+			HeloDomain: os.Getenv(EnvSMTPHeloDomain),
 		},
 		Metrics: MetricsConfig{
 			ListenAddr: getenv(EnvMetricsListenAddr, "0.0.0.0:9090"),
@@ -169,6 +173,12 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 		}
 	}
 	if cfg.SMTP.Port, err = getenvInt(EnvSMTPPort, 0); err != nil {
+		return nil, err
+	}
+	if cfg.SMTP.ImplicitTLS, err = getenvBool(EnvSMTPImplicitTLS, false); err != nil {
+		return nil, err
+	}
+	if cfg.SMTP.Timeout, err = getenvDuration(EnvSMTPTimeout, 10*time.Second); err != nil {
 		return nil, err
 	}
 	if cfg.Identity.ReloadDebounce, err = getenvDuration(EnvIdentityReloadDebounce, 500*time.Millisecond); err != nil {

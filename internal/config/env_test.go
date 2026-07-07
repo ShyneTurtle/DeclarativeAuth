@@ -56,6 +56,12 @@ func TestLoadServerConfigFromEnv_Defaults(t *testing.T) {
 	if cfg.TLS.MinVersion != "1.2" {
 		t.Errorf("unexpected TLS min version default: %q", cfg.TLS.MinVersion)
 	}
+	if cfg.SMTP.ImplicitTLS {
+		t.Error("expected SMTP ImplicitTLS to default false")
+	}
+	if cfg.SMTP.Timeout.Std() != 10*time.Second {
+		t.Errorf("unexpected SMTP timeout default: %v", cfg.SMTP.Timeout.Std())
+	}
 }
 
 func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
@@ -70,6 +76,9 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvRateLimitThreshold, "10")
 	t.Setenv(EnvAdminUIEnabled, "false")
 	t.Setenv(EnvSMTPPassword, "s3cret")
+	t.Setenv(EnvSMTPImplicitTLS, "true")
+	t.Setenv(EnvSMTPTimeout, "30s")
+	t.Setenv(EnvSMTPHeloDomain, "mail.example.com")
 
 	cfg, err := LoadServerConfigFromEnv()
 	if err != nil {
@@ -105,6 +114,15 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	}
 	if cfg.SMTP.Password != "s3cret" {
 		t.Errorf("unexpected SMTP password: %q", cfg.SMTP.Password)
+	}
+	if !cfg.SMTP.ImplicitTLS {
+		t.Error("expected SMTP ImplicitTLS=true override to apply")
+	}
+	if cfg.SMTP.Timeout.Std() != 30*time.Second {
+		t.Errorf("unexpected SMTP timeout: %v", cfg.SMTP.Timeout.Std())
+	}
+	if cfg.SMTP.HeloDomain != "mail.example.com" {
+		t.Errorf("unexpected SMTP HELO domain: %q", cfg.SMTP.HeloDomain)
 	}
 }
 

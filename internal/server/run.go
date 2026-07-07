@@ -77,6 +77,8 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 	mailClient := &mail.Client{Config: mail.Config{
 		Host: cfg.SMTP.Host, Port: cfg.SMTP.Port,
 		Username: cfg.SMTP.Username, Password: cfg.SMTP.Password, From: cfg.SMTP.From,
+		HeloDomain:  cfg.SMTP.HeloDomain,
+		ImplicitTLS: cfg.SMTP.ImplicitTLS, Timeout: cfg.SMTP.Timeout.Std(),
 	}}
 
 	g, gctx := errgroup.WithContext(ctx)

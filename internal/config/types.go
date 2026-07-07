@@ -130,6 +130,26 @@ type SMTPConfig struct {
 	Username string
 	Password string
 	From     string
+	// HeloDomain is the domain sent in the SMTP HELO/EHLO greeting.
+	// Defaults to "localhost" if unset (see mail.Config.HeloDomain) --
+	// override with a real domain you control when relaying through a
+	// listener that validates it (e.g. against SPF).
+	HeloDomain string
+	// ImplicitTLS, when true, wraps the connection in TLS before any SMTP
+	// dialogue (the "SMTPS" scheme, conventionally port 465), instead of
+	// connecting in plaintext and opportunistically upgrading via STARTTLS
+	// (port 587/25). These are mutually exclusive on the wire: pointing this
+	// client at an implicit-TLS-only listener without setting this would
+	// otherwise hang forever, each side waiting for the other to speak first
+	// in the protocol it expects (fixed connection-wide Timeout below bounds
+	// that either way).
+	ImplicitTLS bool
+	// Timeout bounds the whole SMTP exchange (connect, optional TLS
+	// handshake, AUTH, DATA) via a single deadline set right after
+	// connecting, not just the initial dial -- a plain dial timeout wouldn't
+	// catch a protocol-level hang like ImplicitTLS mismatched against the
+	// server. Defaults to 10s (see EnvSMTPTimeout) if zero.
+	Timeout Duration
 }
 
 type MetricsConfig struct {
