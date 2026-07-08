@@ -198,36 +198,44 @@ guarantees LDAP and OIDC present an identical view of identity.
 
 ## TLS
 
-Two supported modes, chosen independently per listener
-(`DECLARATIVEAUTH_LDAP_TLS_ENABLED` / `DECLARATIVEAUTH_OIDC_TLS_ENABLED`):
+LDAP and OIDC/web each have two *independent* listener addresses -- a
+plaintext one and a TLS-terminating ("secure") one -- and either, both, or
+neither can be active, entirely based on whether its address variable is
+set: `DECLARATIVEAUTH_LDAP_LISTEN_ADDR` / `DECLARATIVEAUTH_LDAP_SECURE_LISTEN_ADDR`,
+and `DECLARATIVEAUTH_OIDC_LISTEN_ADDR` / `DECLARATIVEAUTH_OIDC_SECURE_LISTEN_ADDR`.
+There's no separate "TLS enabled" flag to keep in sync -- setting the secure
+address *is* what turns TLS on for that listener, and running both at once
+(e.g. a plaintext port for in-cluster traffic alongside a public TLS port)
+is a supported, ordinary configuration.
 
-- **Self-terminated**: set `..._TLS_ENABLED=true` and provide a cert/key
+- **Self-terminated**: set `..._SECURE_LISTEN_ADDR` and provide a cert/key
   pair (either per-listener, e.g. `DECLARATIVEAUTH_OIDC_TLS_CERT_FILE`, or
   once via the shared `DECLARATIVEAUTH_TLS_CERT_FILE`/`_KEY_FILE`). Certs
   are hot-reloaded from disk on change -- no restart needed to roll a
-  renewed cert. If no cert/key is configured at all while
-  `..._TLS_ENABLED=true`, an ephemeral self-signed certificate is
-  generated instead (a warning is logged; don't rely on this outside local
-  dev).
-- **Reverse-proxy terminated**: leave `..._TLS_ENABLED=false` (the
-  default) and put a TLS-terminating proxy/load balancer in front. Its
-  address needs to be trusted for `X-Forwarded-For` / `X-Forwarded-Proto`
-  headers to be honored (rate limiting, audit logs, and detecting that the
-  original request was HTTPS) -- by default DeclarativeAuth already trusts
-  its own default gateway (`DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY`,
-  true by default), which covers the common case of a reverse proxy on the
-  Docker host or in a sidecar reaching the container through its bridge
-  gateway. Add explicit CIDRs to `DECLARATIVEAUTH_NETWORK_TRUSTED_PROXIES`
-  for anything beyond that (e.g. a load balancer reachable on a different
-  address), or set `DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY=false` if
-  nothing should be trusted implicitly.
+  renewed cert. If no cert/key is configured at all while the secure
+  address is set, an ephemeral self-signed certificate is generated instead
+  (a warning is logged; don't rely on this outside local dev).
+- **Reverse-proxy terminated**: only set `..._LISTEN_ADDR` (leave the
+  `..._SECURE_LISTEN_ADDR` unset) and put a TLS-terminating proxy/load
+  balancer in front. Its address needs to be trusted for `X-Forwarded-For` /
+  `X-Forwarded-Proto` headers to be honored (rate limiting, audit logs, and
+  detecting that the original request was HTTPS) -- by default
+  DeclarativeAuth already trusts its own default gateway
+  (`DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY`, true by default), which
+  covers the common case of a reverse proxy on the Docker host or in a
+  sidecar reaching the container through its bridge gateway. Add explicit
+  CIDRs to `DECLARATIVEAUTH_NETWORK_TRUSTED_PROXIES` for anything beyond
+  that (e.g. a load balancer reachable on a different address), or set
+  `DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY=false` if nothing should be
+  trusted implicitly.
 
 Since "reverse-proxy terminated" is indistinguishable, from the
 configuration alone, from someone simply forgetting to set up TLS at all,
-the server logs an explicit `WARN` at startup whenever a listener has
-TLS disabled (among other risky settings -- see "Insecure-configuration
-guards" below) so it's never silently the case. There's no way to suppress
-these short of actually fixing the setting; they're informational, not
+the server logs an explicit `WARN` at startup whenever a listener's
+plaintext address is set (among other risky settings -- see
+"Insecure-configuration guards" below) so it's never silently the case.
+There's no way to suppress these short of actually fixing the setting;
+they're informational, not
 fatal.
 
 ## Insecure-configuration guards

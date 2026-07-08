@@ -82,18 +82,28 @@ type DatabaseConfig struct {
 	ConnectTimeout Duration
 }
 
+// LDAPConfig configures the LDAP listener(s). ListenAddr and
+// SecureListenAddr are independent and either, both, or neither may be set:
+// each is only listened on when its address is non-empty, and
+// SecureListenAddr is always TLS-terminating (see TLS below for the
+// cert/key source). There is no separate "TLS enabled" flag -- setting
+// SecureListenAddr *is* what enables TLS for that listener.
 type LDAPConfig struct {
-	ListenAddr         string
+	ListenAddr         string // plaintext LDAP, optional
+	SecureListenAddr   string // LDAPS (TLS-terminating), optional
 	BaseDN             string
 	TLS                TLSListenerConfig
 	AllowAnonymousBind bool
 }
 
+// OIDCConfig configures the OIDC/web listener(s), with the same independent
+// plaintext/secure split as LDAPConfig above.
 type OIDCConfig struct {
-	Issuer     string
-	ListenAddr string
-	TLS        TLSListenerConfig
-	Clients    []OIDCClient
+	Issuer           string
+	ListenAddr       string // plaintext HTTP, optional
+	SecureListenAddr string // HTTPS (TLS-terminating), optional
+	TLS              TLSListenerConfig
+	Clients          []OIDCClient
 }
 
 // OIDCClient is a statically declared OIDC relying party. There is no
@@ -114,8 +124,13 @@ type TLSConfig struct {
 	MinVersion string
 }
 
+// TLSListenerConfig is the optional cert/key override for a single secure
+// listener. There is no Enabled flag here -- whether TLS is in play is
+// entirely determined by whether the owning listener's SecureListenAddr is
+// set (see LDAPConfig/OIDCConfig). When CertFile/KeyFile are both empty,
+// buildTLSConfig falls back to the shared TLSConfig, then to a self-signed
+// certificate.
 type TLSListenerConfig struct {
-	Enabled  bool
 	CertFile string
 	KeyFile  string
 }

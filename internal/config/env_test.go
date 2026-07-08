@@ -19,14 +19,14 @@ func TestLoadServerConfigFromEnv_Defaults(t *testing.T) {
 	if cfg.Database.ConnectTimeout.Std() != 5*time.Second {
 		t.Errorf("expected default ConnectTimeout 5s, got %v", cfg.Database.ConnectTimeout.Std())
 	}
-	if cfg.LDAP.ListenAddr != "0.0.0.0:389" || cfg.LDAP.BaseDN != "dc=example,dc=com" {
-		t.Errorf("unexpected LDAP defaults: %+v", cfg.LDAP)
+	if cfg.LDAP.ListenAddr != "" || cfg.LDAP.SecureListenAddr != "" || cfg.LDAP.BaseDN != "" {
+		t.Errorf("expected LDAP listeners and base DN unset by default: %+v", cfg.LDAP)
 	}
-	if cfg.OIDC.ListenAddr != "0.0.0.0:8080" {
-		t.Errorf("unexpected OIDC listen addr default: %q", cfg.OIDC.ListenAddr)
+	if cfg.OIDC.ListenAddr != "" || cfg.OIDC.SecureListenAddr != "" {
+		t.Errorf("expected OIDC listeners unset by default: %+v", cfg.OIDC)
 	}
-	if cfg.Metrics.ListenAddr != "0.0.0.0:9090" {
-		t.Errorf("unexpected metrics listen addr default: %q", cfg.Metrics.ListenAddr)
+	if cfg.Metrics.ListenAddr != "" {
+		t.Errorf("expected metrics listen addr unset by default: %q", cfg.Metrics.ListenAddr)
 	}
 	if cfg.Identity.IdentityPath != "/etc/declarativeauth/identity" {
 		t.Errorf("unexpected identity path default: %q", cfg.Identity.IdentityPath)
@@ -71,7 +71,7 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvLogLevel, "debug")
 	t.Setenv(EnvDatabaseDSN, "postgres://u:p@host/db")
 	t.Setenv(EnvDatabaseMaxConns, "25")
-	t.Setenv(EnvLDAPTLSEnabled, "true")
+	t.Setenv(EnvLDAPSecureListenAddr, "0.0.0.0:636")
 	t.Setenv(EnvLDAPAllowAnonymousBind, "true")
 	t.Setenv(EnvOIDCIssuer, "https://auth.example.com")
 	t.Setenv(EnvNetworkTrustedProxies, "10.0.0.0/8, 192.168.1.0/24")
@@ -97,8 +97,8 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	if cfg.Database.MaxConns != 25 {
 		t.Errorf("unexpected MaxConns: %d", cfg.Database.MaxConns)
 	}
-	if !cfg.LDAP.TLS.Enabled || !cfg.LDAP.AllowAnonymousBind {
-		t.Errorf("expected LDAP TLS/anonymous overrides to apply: %+v", cfg.LDAP)
+	if cfg.LDAP.SecureListenAddr != "0.0.0.0:636" || !cfg.LDAP.AllowAnonymousBind {
+		t.Errorf("expected LDAP secure listen addr/anonymous overrides to apply: %+v", cfg.LDAP)
 	}
 	if cfg.OIDC.Issuer != "https://auth.example.com" {
 		t.Errorf("unexpected OIDC issuer: %q", cfg.OIDC.Issuer)
@@ -154,7 +154,7 @@ func TestLoadServerConfigFromEnv_InvalidValues(t *testing.T) {
 		env  string
 		val  string
 	}{
-		{"bad bool", EnvLDAPTLSEnabled, "not-a-bool"},
+		{"bad bool", EnvLDAPAllowAnonymousBind, "not-a-bool"},
 		{"bad int", EnvDatabaseMaxConns, "not-a-number"},
 		{"bad duration", EnvRateLimitWindow, "not-a-duration"},
 		{"bad JSON clients", EnvOIDCClients, "not json"},

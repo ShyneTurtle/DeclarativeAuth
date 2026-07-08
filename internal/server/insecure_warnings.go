@@ -16,12 +16,12 @@ import (
 // which refuses to submit a password over a page that isn't a secure
 // context.
 func warnInsecureConfig(cfg *config.ServerConfig, logger *slog.Logger) {
-	if !cfg.OIDC.TLS.Enabled {
-		logger.Warn(config.EnvOIDCTLSEnabled+" is false: web login, password reset, and admin traffic (including passwords) will be sent in plaintext unless a TLS-terminating reverse proxy sits in front of this listener",
+	if cfg.OIDC.ListenAddr != "" {
+		logger.Warn(config.EnvOIDCListenAddr+" is set: web login, password reset, and admin traffic (including passwords) sent to this plaintext listener will be readable on the wire unless a TLS-terminating reverse proxy sits in front of it",
 			"component", "startup", "listener", "oidc")
 	}
-	if !cfg.LDAP.TLS.Enabled {
-		logger.Warn(config.EnvLDAPTLSEnabled+" is false: LDAP bind credentials will be sent in plaintext unless a TLS-terminating reverse proxy/stunnel sits in front of this listener",
+	if cfg.LDAP.ListenAddr != "" {
+		logger.Warn(config.EnvLDAPListenAddr+" is set: LDAP bind credentials sent to this plaintext listener will be readable on the wire unless a TLS-terminating reverse proxy/stunnel sits in front of it",
 			"component", "startup", "listener", "ldap")
 	}
 	if cfg.LDAP.AllowAnonymousBind {
@@ -36,8 +36,8 @@ func warnInsecureConfig(cfg *config.ServerConfig, logger *slog.Logger) {
 		logger.Warn(config.EnvPasswordPolicyMinStrength+" is set below the recommended minimum of 2 (\"fair\"): users will be able to set trivially guessable passwords",
 			"component", "startup", "minStrength", cfg.PasswordPolicy.MinStrength)
 	}
-	if cfg.AdminUI.Enabled && cfg.AdminUI.ConfigEditor.Enabled && !cfg.OIDC.TLS.Enabled {
-		logger.Warn(config.EnvAdminUIConfigEditorEnabled+" is true while "+config.EnvOIDCTLSEnabled+" is false: an admin session cookie and the declarative identity files it can rewrite are both exposed to anyone on the network path, absent a TLS-terminating reverse proxy",
+	if cfg.AdminUI.Enabled && cfg.AdminUI.ConfigEditor.Enabled && cfg.OIDC.ListenAddr != "" && cfg.OIDC.SecureListenAddr == "" {
+		logger.Warn(config.EnvAdminUIConfigEditorEnabled+" is true while "+config.EnvOIDCListenAddr+" is set without "+config.EnvOIDCSecureListenAddr+": an admin session cookie and the declarative identity files it can rewrite are both exposed to anyone on the network path, absent a TLS-terminating reverse proxy",
 			"component", "startup")
 	}
 }

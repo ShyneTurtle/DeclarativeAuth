@@ -23,15 +23,22 @@ func runHealthcheck(args []string) error {
 		return err
 	}
 
-	_, port, err := net.SplitHostPort(cfg.OIDC.ListenAddr)
+	// Prefer the secure listener when both are configured, since that's the
+	// one an operator actually cares is healthy in a TLS deployment.
+	addr, scheme, useTLS := cfg.OIDC.SecureListenAddr, "https", true
+	if addr == "" {
+		addr, scheme, useTLS = cfg.OIDC.ListenAddr, "http", false
+	}
+	if addr == "" {
+		return fmt.Errorf("neither %s nor %s is set", config.EnvOIDCSecureListenAddr, config.EnvOIDCListenAddr)
+	}
+	_, port, err := net.SplitHostPort(addr)
 	if err != nil {
-		return fmt.Errorf("parsing %s: %w", config.EnvOIDCListenAddr, err)
+		return fmt.Errorf("parsing OIDC listen addr: %w", err)
 	}
 
-	scheme := "http"
 	client := &http.Client{Timeout: 3 * time.Second}
-	if cfg.OIDC.TLS.Enabled {
-		scheme = "https"
+	if useTLS {
 		// Loopback self-check: the cert's SAN won't include "127.0.0.1" in
 		// most deployments, and there's no attacker-in-the-middle position
 		// between a process and itself, so skipping verification here is

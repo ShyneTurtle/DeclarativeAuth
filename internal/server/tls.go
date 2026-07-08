@@ -11,17 +11,15 @@ import (
 	dtls "declarativeauth/internal/tls"
 )
 
-// buildTLSConfig resolves the effective cert/key source for a listener: nil
-// (no TLS, reverse-proxy-termination mode, Section 9b) if the listener
-// disables TLS; a listener-specific cert/key pair if set; the shared
-// top-level cert/key pair; or an ephemeral self-signed dev cert as a last
-// resort. When file-backed, a hot-rotation watcher goroutine is started,
-// stopping when ctx is cancelled.
+// buildTLSConfig resolves the effective cert/key source for a TLS-terminating
+// listener: a listener-specific cert/key pair if set; the shared top-level
+// cert/key pair; or an ephemeral self-signed dev cert as a last resort. Only
+// called for a listener whose secure address is actually set (see
+// LDAPConfig.SecureListenAddr / OIDCConfig.SecureListenAddr) -- a plaintext
+// listener never calls this and reverse-proxy-TLS-termination mode is simply
+// not calling it at all. When file-backed, a hot-rotation watcher goroutine
+// is started, stopping when ctx is cancelled.
 func buildTLSConfig(ctx context.Context, top config.TLSConfig, listener config.TLSListenerConfig, logger *slog.Logger) (*stdtls.Config, error) {
-	if !listener.Enabled {
-		return nil, nil // reverse-proxy-TLS-termination mode
-	}
-
 	certFile, keyFile := listener.CertFile, listener.KeyFile
 	if certFile == "" {
 		certFile = top.CertFile

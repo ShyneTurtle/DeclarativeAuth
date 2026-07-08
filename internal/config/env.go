@@ -21,22 +21,30 @@ const (
 	EnvDatabaseMaxConns       = "DECLARATIVEAUTH_DATABASE_MAX_CONNS"
 	EnvDatabaseConnectTimeout = "DECLARATIVEAUTH_DATABASE_CONNECT_TIMEOUT"
 
+	// EnvLDAPListenAddr and EnvLDAPSecureListenAddr are independent: each
+	// listener is only started when its address is set (no default for
+	// either), and EnvLDAPSecureListenAddr is always TLS-terminating -- there
+	// is no separate "LDAP TLS enabled" variable, setting this address *is*
+	// what enables it.
 	EnvLDAPListenAddr         = "DECLARATIVEAUTH_LDAP_LISTEN_ADDR"
+	EnvLDAPSecureListenAddr   = "DECLARATIVEAUTH_LDAP_SECURE_LISTEN_ADDR"
 	EnvLDAPBaseDN             = "DECLARATIVEAUTH_LDAP_BASE_DN"
 	EnvLDAPAllowAnonymousBind = "DECLARATIVEAUTH_LDAP_ALLOW_ANONYMOUS_BIND"
-	EnvLDAPTLSEnabled         = "DECLARATIVEAUTH_LDAP_TLS_ENABLED"
 	EnvLDAPTLSCertFile        = "DECLARATIVEAUTH_LDAP_TLS_CERT_FILE"
 	EnvLDAPTLSKeyFile         = "DECLARATIVEAUTH_LDAP_TLS_KEY_FILE"
 
-	EnvOIDCIssuer     = "DECLARATIVEAUTH_OIDC_ISSUER"
-	EnvOIDCListenAddr = "DECLARATIVEAUTH_OIDC_LISTEN_ADDR"
-	EnvOIDCTLSEnabled = "DECLARATIVEAUTH_OIDC_TLS_ENABLED"
-	EnvOIDCTLSCert    = "DECLARATIVEAUTH_OIDC_TLS_CERT_FILE"
-	EnvOIDCTLSKey     = "DECLARATIVEAUTH_OIDC_TLS_KEY_FILE"
+	// EnvOIDCListenAddr and EnvOIDCSecureListenAddr are the same independent
+	// plaintext/secure split as the LDAP pair above.
+	EnvOIDCIssuer           = "DECLARATIVEAUTH_OIDC_ISSUER"
+	EnvOIDCListenAddr       = "DECLARATIVEAUTH_OIDC_LISTEN_ADDR"
+	EnvOIDCSecureListenAddr = "DECLARATIVEAUTH_OIDC_SECURE_LISTEN_ADDR"
+	EnvOIDCTLSCert          = "DECLARATIVEAUTH_OIDC_TLS_CERT_FILE"
+	EnvOIDCTLSKey           = "DECLARATIVEAUTH_OIDC_TLS_KEY_FILE"
 	// EnvOIDCClients holds a JSON array of {clientID, redirectURIs, public,
 	// clientSecret} objects -- the one field that doesn't map cleanly to a
 	// single scalar env var. e.g.:
 	//   [{"clientID":"example-client","redirectURIs":["http://localhost:9000/callback"],"public":true}]
+	// Deprecated: will be removed in a future release.
 	EnvOIDCClients = "DECLARATIVEAUTH_OIDC_CLIENTS"
 
 	EnvSMTPHost               = "DECLARATIVEAUTH_SMTP_HOST"
@@ -108,16 +116,18 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 			DSN: os.Getenv(EnvDatabaseDSN),
 		},
 		LDAP: LDAPConfig{
-			ListenAddr: getenv(EnvLDAPListenAddr, "0.0.0.0:389"),
-			BaseDN:     getenv(EnvLDAPBaseDN, "dc=example,dc=com"),
+			ListenAddr:       os.Getenv(EnvLDAPListenAddr),
+			SecureListenAddr: os.Getenv(EnvLDAPSecureListenAddr),
+			BaseDN:           os.Getenv(EnvLDAPBaseDN),
 			TLS: TLSListenerConfig{
 				CertFile: os.Getenv(EnvLDAPTLSCertFile),
 				KeyFile:  os.Getenv(EnvLDAPTLSKeyFile),
 			},
 		},
 		OIDC: OIDCConfig{
-			Issuer:     os.Getenv(EnvOIDCIssuer),
-			ListenAddr: getenv(EnvOIDCListenAddr, "0.0.0.0:8080"),
+			Issuer:           os.Getenv(EnvOIDCIssuer),
+			ListenAddr:       os.Getenv(EnvOIDCListenAddr),
+			SecureListenAddr: os.Getenv(EnvOIDCSecureListenAddr),
 			TLS: TLSListenerConfig{
 				CertFile: os.Getenv(EnvOIDCTLSCert),
 				KeyFile:  os.Getenv(EnvOIDCTLSKey),
@@ -131,7 +141,9 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 			HeloDomain: os.Getenv(EnvSMTPHeloDomain),
 		},
 		Metrics: MetricsConfig{
-			ListenAddr: getenv(EnvMetricsListenAddr, "0.0.0.0:9090"),
+			// No default: unset means metrics are disabled entirely (see
+			// EnvMetricsListenAddr).
+			ListenAddr: os.Getenv(EnvMetricsListenAddr),
 		},
 		Identity: IdentityConfig{
 			IdentityPath: getenv(EnvIdentityPath, "/etc/declarativeauth/identity"),
@@ -157,12 +169,6 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 		return nil, err
 	}
 	if cfg.LDAP.AllowAnonymousBind, err = getenvBool(EnvLDAPAllowAnonymousBind, false); err != nil {
-		return nil, err
-	}
-	if cfg.LDAP.TLS.Enabled, err = getenvBool(EnvLDAPTLSEnabled, false); err != nil {
-		return nil, err
-	}
-	if cfg.OIDC.TLS.Enabled, err = getenvBool(EnvOIDCTLSEnabled, false); err != nil {
 		return nil, err
 	}
 	if v := os.Getenv(EnvOIDCClients); v != "" {

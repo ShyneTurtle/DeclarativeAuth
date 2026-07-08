@@ -1,52 +1,140 @@
 # Non-secret DECLARATIVEAUTH_* environment variables, consumed via
 # `envFrom: configMapRef` in deployment.yaml. Secrets (DB password, SMTP
-# password) live in secret-example.yaml instead -- see
-# examples/.env.example for the full variable reference.
+# password) live in secret-example.yaml instead.
+#
+# Mirrors the layout and conventions of examples/.env.example (the full
+# variable reference, with every default/required/optional note spelled
+# out): a commented-out key shows the code's own default and needs nothing
+# more than removing the "#" to opt into the value shown, an uncommented key
+# is this deployment's actual explicit choice. Same rule for the plaintext
+# vs. secure listener pairs below -- "uncomment to enable" / "comment to
+# disable" toggles them by presence, there's no separate enabled flag.
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: declarativeauth-config
 data:
+  # ---- Logging ---------------------------------------------------------------
   DECLARATIVEAUTH_LOG_LEVEL: info
-  DECLARATIVEAUTH_LOG_FORMAT: json
+  # Default: json
+  # DECLARATIVEAUTH_LOG_FORMAT: json
 
-  DECLARATIVEAUTH_DATABASE_MAX_CONNS: "10"
-
+  # ---- Password policy ---------------------------------------------------------
   DECLARATIVEAUTH_PASSWORD_POLICY_MIN_LENGTH: "12"
   DECLARATIVEAUTH_PASSWORD_POLICY_MIN_STRENGTH: "3"
 
-  DECLARATIVEAUTH_LDAP_LISTEN_ADDR: "0.0.0.0:636"
+  # ---- Database ----------------------------------------------------------------
+  # Default: 10
+  # DECLARATIVEAUTH_DATABASE_MAX_CONNS: "10"
+  # Default: 5s
+  # DECLARATIVEAUTH_DATABASE_CONNECT_TIMEOUT: 5s
+
+  # ---- LDAP ----------------------------------------------------------------------
+  # Required: the LDAP base domain name (DN), where the directory entries are located.
   DECLARATIVEAUTH_LDAP_BASE_DN: "dc=example,dc=com"
-  DECLARATIVEAUTH_LDAP_TLS_ENABLED: "true"
+  # Default: false, uncomment to allow anonymous binds (no username/password).
+  # DECLARATIVEAUTH_LDAP_ALLOW_ANONYMOUS_BIND: "true"
 
+  # Uncomment to also run a plaintext LDAP listener (e.g. for in-cluster
+  # clients behind their own mTLS/service-mesh encryption).
+  # DECLARATIVEAUTH_LDAP_LISTEN_ADDR: "0.0.0.0:389"
+
+  # Comment to disable the secure LDAP listener (LDAPS, TLS-terminating).
+  DECLARATIVEAUTH_LDAP_SECURE_LISTEN_ADDR: "0.0.0.0:636"
+  # Optional per-listener cert/key path. If unset, falls back to the shared
+  # DECLARATIVEAUTH_TLS_CERT_FILE/KEY_FILE below.
+  # DECLARATIVEAUTH_LDAP_TLS_CERT_FILE: ""
+  # DECLARATIVEAUTH_LDAP_TLS_KEY_FILE: ""
+
+  # ---- OIDC / web ------------------------------------------------------------------
+  # (required if OIDC enabled) Must exactly match the externally-visible base
+  # URL clients use; it's embedded in issued tokens and the discovery document.
   DECLARATIVEAUTH_OIDC_ISSUER: "https://auth.example.com"
-  DECLARATIVEAUTH_OIDC_LISTEN_ADDR: "0.0.0.0:8443"
-  DECLARATIVEAUTH_OIDC_TLS_ENABLED: "true"
 
+  # Uncomment to also run a plaintext OIDC/web listener.
+  # DECLARATIVEAUTH_OIDC_LISTEN_ADDR: "0.0.0.0:8080"
+
+  # Comment to disable the secure OIDC/web listener (TLS-terminating).
+  DECLARATIVEAUTH_OIDC_SECURE_LISTEN_ADDR: "0.0.0.0:8443"
+  # Optional per-listener cert/key path. If unset, falls back to the shared
+  # DECLARATIVEAUTH_TLS_CERT_FILE/KEY_FILE below.
+  # DECLARATIVEAUTH_OIDC_TLS_CERT_FILE: ""
+  # DECLARATIVEAUTH_OIDC_TLS_KEY_FILE: ""
+
+  # DEPRECATED: will be removed in a future release. Empty/unset means no
+  # statically declared OIDC clients.
+  # DECLARATIVEAUTH_OIDC_CLIENTS: "[]"
+
+  # ---- SMTP --------------------------------------------------------------------
   DECLARATIVEAUTH_SMTP_HOST: smtp.example.com
+  # Typically 587 (STARTTLS), 25 (insecure), or 465 (implicit TLS -- also
+  # uncomment DECLARATIVEAUTH_SMTP_IMPLICIT_TLS below).
   DECLARATIVEAUTH_SMTP_PORT: "587"
-  DECLARATIVEAUTH_SMTP_USERNAME: "notifications@example.com"
-  DECLARATIVEAUTH_SMTP_FROM: "DeclarativeAuth <notifications@example.com>"
+  # Default: false, uncomment to enable implicit TLS (SMTPS, port 465 typically).
+  # DECLARATIVEAUTH_SMTP_IMPLICIT_TLS: "true"
+  # Default: false, uncomment to skip TLS certificate verification (self-signed certs).
+  # DECLARATIVEAUTH_SMTP_INSECURE_SKIP_VERIFY: "true"
 
+  # Optional; leave unset if the relay doesn't require auth.
+  DECLARATIVEAUTH_SMTP_USERNAME: "notifications@example.com"
+  # DECLARATIVEAUTH_SMTP_PASSWORD lives in secret-example.yaml, not here.
+
+  # Optional "from" address. If unset, the SMTP server's default is used.
+  DECLARATIVEAUTH_SMTP_FROM: "DeclarativeAuth <notifications@example.com>"
+  # Optional HELO/EHLO domain. If unset, localhost is used.
+  # DECLARATIVEAUTH_SMTP_HELO_DOMAIN: ""
+  # Default: 10s
+  # DECLARATIVEAUTH_SMTP_TIMEOUT: 10s
+
+  # ---- Metrics -----------------------------------------------------------------
+  # Uncomment to enable Prometheus metrics.
   DECLARATIVEAUTH_METRICS_LISTEN_ADDR: "0.0.0.0:9090"
 
-  DECLARATIVEAUTH_IDENTITY_PATH: /etc/declarativeauth/identity
-  DECLARATIVEAUTH_IDENTITY_RELOAD_DEBOUNCE: 500ms
+  # ---- Declarative identity ------------------------------------------------------
+  # Default: /etc/declarativeauth/identity
+  # DECLARATIVEAUTH_IDENTITY_PATH: /etc/declarativeauth/identity
+  # Default: 500ms, avoids multiple reloads when editing multiple files (eg. config upload).
+  # DECLARATIVEAUTH_IDENTITY_RELOAD_DEBOUNCE: 500ms
 
-  DECLARATIVEAUTH_NETWORK_TRUSTED_PROXIES: ""
+  # ---- Network / reverse proxy -------------------------------------------------
+  # Optional, comma-separated CIDR ranges of reverse proxies/load balancers you
+  # trust to report the real client IP/scheme via X-Forwarded-For / X-Forwarded-Proto.
+  # DECLARATIVEAUTH_NETWORK_TRUSTED_PROXIES: ""
+  # Default: true, uncomment if DeclarativeAuth is reachable directly (no proxy).
+  # DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY: "false"
 
+  # ---- Brute-force backoff ------------------------------------------------------
   DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD: "5"
-  DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_BASE: 1s
-  DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_MAX: 15m
-  DECLARATIVEAUTH_RATE_LIMIT_WINDOW: 24h
+  # Default: 1s
+  # DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_BASE: 1s
+  # Default: 15m
+  # DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_MAX: 15m
+  # Default: 24h
+  # DECLARATIVEAUTH_RATE_LIMIT_WINDOW: 24h
 
+  # ---- Admin UI ------------------------------------------------------------------
   DECLARATIVEAUTH_ADMIN_UI_ENABLED: "true"
+  # Members of this declarative group (defined in the identity ConfigMap) can reach /admin.
   DECLARATIVEAUTH_ADMIN_UI_ADMIN_GROUP: admins
-  DECLARATIVEAUTH_ADMIN_UI_CONFIG_EDITOR_ENABLED: "false"
+  # Default: false, uncomment to enable the config editor. Only safe for a
+  # single-instance deployment writing to local disk -- this chart runs
+  # multiple replicas (see deployment.yaml), so leave this off and edit the
+  # identity ConfigMap through your normal GitOps pipeline instead.
+  # DECLARATIVEAUTH_ADMIN_UI_CONFIG_EDITOR_ENABLED: "true"
 
+  # ---- Shared TLS settings --------------------------------------------------------
+  # Optional shared certificate (LDAPS & web), can be overridden per listener above.
   DECLARATIVEAUTH_TLS_CERT_FILE: /etc/declarativeauth/tls/tls.crt
   DECLARATIVEAUTH_TLS_KEY_FILE: /etc/declarativeauth/tls/tls.key
+  # Default: 1.2
+  # DECLARATIVEAUTH_TLS_MIN_VERSION: "1.2"
 
+  # ---- Passkeys (WebAuthn) --------------------------------------------------------
+  # Default: true, uncomment to disable passkeys.
+  # DECLARATIVEAUTH_WEBAUTHN_ENABLED: "false"
   # RP ID/origins default to DECLARATIVEAUTH_OIDC_ISSUER's host above, so
   # nothing to set here unless passkeys need a different scope.
-  DECLARATIVEAUTH_WEBAUTHN_ENABLED: "true"
+  # DECLARATIVEAUTH_WEBAUTHN_RP_ID: ""
+  # DECLARATIVEAUTH_WEBAUTHN_RP_ORIGINS: ""
+  # Default: DeclarativeAuth
+  # DECLARATIVEAUTH_WEBAUTHN_RP_DISPLAY_NAME: DeclarativeAuth

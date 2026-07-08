@@ -78,15 +78,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 
 	g, gctx := errgroup.WithContext(ctx)
 
-	if cfg.LDAP.ListenAddr != "" {
-		tlsCfg, err := buildTLSConfig(gctx, cfg.TLS, cfg.LDAP.TLS, logger)
-		if err != nil {
-			return fmt.Errorf("ldap TLS: %w", err)
-		}
-		ln, err := listenLDAP(cfg.LDAP.ListenAddr, tlsCfg)
-		if err != nil {
-			return fmt.Errorf("listening on ldap addr: %w", err)
-		}
+	if cfg.LDAP.ListenAddr != "" || cfg.LDAP.SecureListenAddr != "" {
 		ldapHandler := &ldapserver.Handler{
 			Config: ldapserver.Config{
 				BaseDN:             cfg.LDAP.BaseDN,
@@ -120,16 +112,39 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			},
 		}
 		ldapSrv := &ldapserver.Server{Handler: ldapHandler}
-		g.Go(func() error {
-			logger.Info("ldap listener started", "component", "ldapserver", "addr", cfg.LDAP.ListenAddr, "tls", tlsCfg != nil)
-			return ldapSrv.Serve(gctx, ln)
-		})
+
+		if cfg.LDAP.ListenAddr != "" {
+			ln, err := listenLDAP(cfg.LDAP.ListenAddr, nil)
+			if err != nil {
+				return fmt.Errorf("listening on ldap addr: %w", err)
+			}
+			addr := cfg.LDAP.ListenAddr
+			g.Go(func() error {
+				logger.Info("ldap listener started", "component", "ldapserver", "addr", addr, "tls", false)
+				return ldapSrv.Serve(gctx, ln)
+			})
+		}
+		if cfg.LDAP.SecureListenAddr != "" {
+			tlsCfg, err := buildTLSConfig(gctx, cfg.TLS, cfg.LDAP.TLS, logger)
+			if err != nil {
+				return fmt.Errorf("ldap TLS: %w", err)
+			}
+			ln, err := listenLDAP(cfg.LDAP.SecureListenAddr, tlsCfg)
+			if err != nil {
+				return fmt.Errorf("listening on ldap secure addr: %w", err)
+			}
+			addr := cfg.LDAP.SecureListenAddr
+			g.Go(func() error {
+				logger.Info("ldap listener started", "component", "ldapserver", "addr", addr, "tls", true)
+				return ldapSrv.Serve(gctx, ln)
+			})
+		}
 	}
 
-	if cfg.OIDC.ListenAddr != "" {
+	if cfg.OIDC.ListenAddr != "" || cfg.OIDC.SecureListenAddr != "" {
 		sessions := &web.SessionManager{
 			Sessions: sessionStore,
-			Secure:   cfg.OIDC.TLS.Enabled,
+			Secure:   cfg.OIDC.SecureListenAddr != "",
 			Logger:   logger,
 		}
 		keys, err := oidcserver.NewKeySet()
@@ -268,15 +283,26 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		mux.HandleFunc("/healthz", healthzHandler)
 		mux.HandleFunc("/readyz", readyzHandler(pool))
 
-		tlsCfg, err := buildTLSConfig(gctx, cfg.TLS, cfg.OIDC.TLS, logger)
-		if err != nil {
-			return fmt.Errorf("oidc TLS: %w", err)
+		if cfg.OIDC.ListenAddr != "" {
+			httpSrv := &http.Server{Addr: cfg.OIDC.ListenAddr, Handler: mux}
+			addr := cfg.OIDC.ListenAddr
+			g.Go(func() error {
+				logger.Info("oidc/web listener started", "component", "oidcserver", "addr", addr, "tls", false)
+				return serveHTTPUntilDone(gctx, httpSrv, false, logger)
+			})
 		}
-		httpSrv := &http.Server{Addr: cfg.OIDC.ListenAddr, Handler: mux, TLSConfig: tlsCfg}
-		g.Go(func() error {
-			logger.Info("oidc/web listener started", "component", "oidcserver", "addr", cfg.OIDC.ListenAddr, "tls", tlsCfg != nil)
-			return serveHTTPUntilDone(gctx, httpSrv, tlsCfg != nil, logger)
-		})
+		if cfg.OIDC.SecureListenAddr != "" {
+			tlsCfg, err := buildTLSConfig(gctx, cfg.TLS, cfg.OIDC.TLS, logger)
+			if err != nil {
+				return fmt.Errorf("oidc TLS: %w", err)
+			}
+			httpSrv := &http.Server{Addr: cfg.OIDC.SecureListenAddr, Handler: mux, TLSConfig: tlsCfg}
+			addr := cfg.OIDC.SecureListenAddr
+			g.Go(func() error {
+				logger.Info("oidc/web listener started", "component", "oidcserver", "addr", addr, "tls", true)
+				return serveHTTPUntilDone(gctx, httpSrv, true, logger)
+			})
+		}
 	}
 
 	if cfg.Metrics.ListenAddr != "" && reg != nil {

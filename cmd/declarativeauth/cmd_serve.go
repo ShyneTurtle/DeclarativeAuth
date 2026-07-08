@@ -74,7 +74,9 @@ func runServe(args []string) error {
 		"users", len(snap.Users),
 		"groups", len(snap.Groups),
 		"ldap_addr", cfg.LDAP.ListenAddr,
+		"ldap_secure_addr", cfg.LDAP.SecureListenAddr,
 		"oidc_addr", cfg.OIDC.ListenAddr,
+		"oidc_secure_addr", cfg.OIDC.SecureListenAddr,
 		"metrics_addr", cfg.Metrics.ListenAddr,
 	)
 
