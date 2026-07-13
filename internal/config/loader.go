@@ -2,8 +2,11 @@ package config
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"declarativeauth/internal/identity"
@@ -11,127 +14,148 @@ import (
 	"sigs.k8s.io/yaml"
 )
 
-// LoadIdentity reads users.yaml/groups.yaml (or users.d/*.yaml, groups.d/*.yaml)
-// and the optional oidc-clients.yaml (or oidc-clients.d/*.yaml) under dir,
-// validates them, and returns a fully-resolved Snapshot.
+// configAPIVersion is the apiVersion every recognized declarative config
+// file must declare, alongside a recognized "kind" (see loadFile below).
+const configAPIVersion = "declarativeauth.io/v1"
+
+// fileHeader is the minimal shape peeked at to decide whether a YAML file
+// under the identity directory is one of ours, and if so, which kind.
+type fileHeader struct {
+	APIVersion string `json:"apiVersion"`
+	Kind       string `json:"kind"`
+}
+
+// LoadIdentity recursively scans every .yaml/.yml file under dir (skipping
+// dotfiles/dot-directories, e.g. Kubernetes ConfigMap/Secret's internal
+// "..data" symlink and timestamped backing directories), parses the ones
+// carrying a recognized header (apiVersion: declarativeauth.io/v1, kind:
+// UserList | GroupList | OIDCClientList), and returns a fully-resolved
+// Snapshot. A file without a recognized header -- wrong/missing apiVersion,
+// unknown kind, or not even valid YAML -- is silently ignored, so the
+// identity directory can be organized however you like: any file names,
+// nested subdirectories, unrelated YAML mixed in. A file that DOES declare
+// a recognized header is held to strict validation, though -- typos in a
+// file that claims to be ours are a real error, not something to ignore.
+//
+// Both users.yaml-equivalent and groups.yaml-equivalent content are
+// optional: zero declared groups is fine as long as no user references
+// one (see identity.CheckReferences), and zero declared users doesn't fail
+// the load at all -- callers (the CLI, the hot-reload watcher) are
+// expected to warn about that themselves, since "no one can log in yet" is
+// a legitimate transient state (e.g. bootstrapping a fresh deployment)
+// rather than a config error.
 func LoadIdentity(dir string) (*identity.Snapshot, error) {
-	groupFiles, err := globOrSingle(dir, "groups.yaml", "groups.d", true)
-	if err != nil {
-		return nil, err
-	}
-	userFiles, err := globOrSingle(dir, "users.yaml", "users.d", true)
-	if err != nil {
-		return nil, err
-	}
-	// Optional: unlike users/groups, an OIDC-less deployment (LDAP-only, or
-	// no relying parties registered yet) is entirely normal, so a missing
-	// oidc-clients.yaml just means zero clients, not an error.
-	clientFiles, err := globOrSingle(dir, "oidc-clients.yaml", "oidc-clients.d", false)
+	files, err := yamlFilesUnder(dir)
 	if err != nil {
 		return nil, err
 	}
 
 	groups := map[string]identity.Group{}
-	var rawBytes []byte
-	for _, f := range groupFiles {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", f, err)
-		}
-		rawBytes = append(rawBytes, b...)
-		var gf GroupFile
-		if err := yaml.UnmarshalStrict(b, &gf); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", f, err)
-		}
-		for _, g := range gf.Groups {
-			if g.Name == "" {
-				return nil, fmt.Errorf("%s: group with empty name", f)
-			}
-			if _, exists := groups[g.Name]; exists {
-				return nil, fmt.Errorf("%s: duplicate group name %q", f, g.Name)
-			}
-			groups[g.Name] = identity.Group{
-				Name:           g.Name,
-				Description:    g.Description,
-				MemberOfGroups: g.MemberOfGroups,
-				RequireMFA:     g.RequireMFA,
-			}
-		}
-	}
-
 	users := map[string]identity.User{}
 	emails := map[string]string{}
-	for _, f := range userFiles {
-		b, err := os.ReadFile(f)
-		if err != nil {
-			return nil, fmt.Errorf("reading %s: %w", f, err)
-		}
-		rawBytes = append(rawBytes, b...)
-		var uf UserFile
-		if err := yaml.UnmarshalStrict(b, &uf); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", f, err)
-		}
-		for _, u := range uf.Users {
-			if u.Username == "" {
-				return nil, fmt.Errorf("%s: user with empty username", f)
-			}
-			if _, exists := users[u.Username]; exists {
-				return nil, fmt.Errorf("%s: duplicate username %q", f, u.Username)
-			}
-			if u.Email != "" {
-				if existing, ok := emails[u.Email]; ok {
-					return nil, fmt.Errorf("%s: duplicate email %q (users %q and %q)", f, u.Email, existing, u.Username)
-				}
-				emails[u.Email] = u.Username
-			}
-			enabled := true
-			if u.Enabled != nil {
-				enabled = *u.Enabled
-			}
-			users[u.Username] = identity.User{
-				Username:       u.Username,
-				Email:          u.Email,
-				FirstName:      u.FirstName,
-				Name:           u.Name,
-				DisplayName:    u.DisplayName,
-				Enabled:        enabled,
-				MemberOfGroups: u.MemberOfGroups,
-				MFAEnabled:     u.MFAEnabled,
-			}
-		}
-	}
-
 	oidcClients := map[string]identity.OIDCClient{}
-	for _, f := range clientFiles {
+	var rawBytes []byte
+
+	for _, f := range files {
 		b, err := os.ReadFile(f)
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", f, err)
 		}
+
+		var hdr fileHeader
+		if err := yaml.Unmarshal(b, &hdr); err != nil {
+			continue // not a YAML mapping we can even inspect -- not ours
+		}
+		if hdr.APIVersion != configAPIVersion {
+			continue
+		}
+
+		switch hdr.Kind {
+		case "GroupList":
+			var gf GroupFile
+			if err := yaml.UnmarshalStrict(b, &gf); err != nil {
+				return nil, fmt.Errorf("parsing %s: %w", f, err)
+			}
+			for _, g := range gf.Groups {
+				if g.Name == "" {
+					return nil, fmt.Errorf("%s: group with empty name", f)
+				}
+				if _, exists := groups[g.Name]; exists {
+					return nil, fmt.Errorf("%s: duplicate group name %q", f, g.Name)
+				}
+				groups[g.Name] = identity.Group{
+					Name:           g.Name,
+					Description:    g.Description,
+					MemberOfGroups: g.MemberOfGroups,
+					RequireMFA:     g.RequireMFA,
+				}
+			}
+
+		case "UserList":
+			var uf UserFile
+			if err := yaml.UnmarshalStrict(b, &uf); err != nil {
+				return nil, fmt.Errorf("parsing %s: %w", f, err)
+			}
+			for _, u := range uf.Users {
+				if u.Username == "" {
+					return nil, fmt.Errorf("%s: user with empty username", f)
+				}
+				if _, exists := users[u.Username]; exists {
+					return nil, fmt.Errorf("%s: duplicate username %q", f, u.Username)
+				}
+				if u.Email != "" {
+					if existing, ok := emails[u.Email]; ok {
+						return nil, fmt.Errorf("%s: duplicate email %q (users %q and %q)", f, u.Email, existing, u.Username)
+					}
+					emails[u.Email] = u.Username
+				}
+				enabled := true
+				if u.Enabled != nil {
+					enabled = *u.Enabled
+				}
+				users[u.Username] = identity.User{
+					Username:       u.Username,
+					Email:          u.Email,
+					FirstName:      u.FirstName,
+					Name:           u.Name,
+					DisplayName:    u.DisplayName,
+					Enabled:        enabled,
+					MemberOfGroups: u.MemberOfGroups,
+					MFAEnabled:     u.MFAEnabled,
+				}
+			}
+
+		case "OIDCClientList":
+			var cf OIDCClientFile
+			if err := yaml.UnmarshalStrict(b, &cf); err != nil {
+				return nil, fmt.Errorf("parsing %s: %w", f, err)
+			}
+			for _, c := range cf.Clients {
+				if c.ClientID == "" {
+					return nil, fmt.Errorf("%s: OIDC client with empty clientID", f)
+				}
+				if _, exists := oidcClients[c.ClientID]; exists {
+					return nil, fmt.Errorf("%s: duplicate OIDC clientID %q", f, c.ClientID)
+				}
+				if len(c.RedirectURIs) == 0 {
+					return nil, fmt.Errorf("%s: OIDC client %q has no redirectURIs", f, c.ClientID)
+				}
+				if !c.Public && c.ClientSecret == "" {
+					return nil, fmt.Errorf("%s: confidential OIDC client %q (public: false) must set clientSecret", f, c.ClientID)
+				}
+				oidcClients[c.ClientID] = identity.OIDCClient{
+					ClientID:     c.ClientID,
+					RedirectURIs: c.RedirectURIs,
+					Public:       c.Public,
+					ClientSecret: c.ClientSecret,
+				}
+			}
+
+		default:
+			continue // recognized apiVersion, but not a kind this build knows -- ignore
+		}
+
 		rawBytes = append(rawBytes, b...)
-		var cf OIDCClientFile
-		if err := yaml.UnmarshalStrict(b, &cf); err != nil {
-			return nil, fmt.Errorf("parsing %s: %w", f, err)
-		}
-		for _, c := range cf.Clients {
-			if c.ClientID == "" {
-				return nil, fmt.Errorf("%s: OIDC client with empty clientID", f)
-			}
-			if _, exists := oidcClients[c.ClientID]; exists {
-				return nil, fmt.Errorf("%s: duplicate OIDC clientID %q", f, c.ClientID)
-			}
-			if len(c.RedirectURIs) == 0 {
-				return nil, fmt.Errorf("%s: OIDC client %q has no redirectURIs", f, c.ClientID)
-			}
-			if !c.Public && c.ClientSecret == "" {
-				return nil, fmt.Errorf("%s: confidential OIDC client %q (public: false) must set clientSecret", f, c.ClientID)
-			}
-			oidcClients[c.ClientID] = identity.OIDCClient{
-				ClientID:     c.ClientID,
-				RedirectURIs: c.RedirectURIs,
-				Public:       c.Public,
-				ClientSecret: c.ClientSecret,
-			}
-		}
 	}
 
 	if err := identity.CheckReferences(users, groups); err != nil {
@@ -153,23 +177,39 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 	}, nil
 }
 
-// globOrSingle returns [dir/single] if it exists, else dir/dirName/*.yaml.
-// If required is false and neither exists, it returns (nil, nil) instead of
-// an error.
-func globOrSingle(dir, single, dirName string, required bool) ([]string, error) {
-	singlePath := filepath.Join(dir, single)
-	if _, err := os.Stat(singlePath); err == nil {
-		return []string{singlePath}, nil
-	}
-	matches, err := filepath.Glob(filepath.Join(dir, dirName, "*.yaml"))
+// yamlFilesUnder recursively finds every *.yaml/*.yml file under dir, in a
+// deterministic (sorted) order so SourceHash is stable across reloads that
+// change nothing. Dotfiles and dot-directories are skipped -- most notably
+// Kubernetes ConfigMap/Secret volumes, where the mount root contains a
+// "..data" symlink (to the real, timestamped backing directory) alongside
+// the individual key symlinks at the top level; without this skip, walking
+// into "..data" would visit every declared file a second time under a
+// different path and every entry would come back "duplicate".
+func yamlFilesUnder(dir string) ([]string, error) {
+	var files []string
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		name := d.Name()
+		if d.IsDir() {
+			if path != dir && strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if strings.HasPrefix(name, ".") {
+			return nil
+		}
+		switch strings.ToLower(filepath.Ext(name)) {
+		case ".yaml", ".yml":
+			files = append(files, path)
+		}
+		return nil
+	})
 	if err != nil {
 		return nil, err
 	}
-	if len(matches) == 0 {
-		if !required {
-			return nil, nil
-		}
-		return nil, fmt.Errorf("neither %s nor %s/*.yaml found under %s", single, dirName, dir)
-	}
-	return matches, nil
+	sort.Strings(files)
+	return files, nil
 }

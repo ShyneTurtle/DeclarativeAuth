@@ -187,3 +187,142 @@ clients:
 		t.Fatal("expected error for a confidential client without a clientSecret, got nil")
 	}
 }
+
+// TestLoadIdentity_ArbitraryLayout is the core of the "no hardcoded
+// filenames" behavior: content split across nested subdirectories with
+// non-conventional names, discovered purely by each file's own
+// apiVersion/kind header, plus an unrelated YAML file (no recognized
+// header at all) mixed in that must be silently ignored rather than
+// erroring.
+func TestLoadIdentity_ArbitraryLayout(t *testing.T) {
+	dir := t.TempDir()
+	write := func(rel, content string) {
+		t.Helper()
+		full := filepath.Join(dir, rel)
+		if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+			t.Fatalf("mkdir for %s: %v", rel, err)
+		}
+		if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", rel, err)
+		}
+	}
+
+	write("teams/engineering.yaml", `
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: engineering
+    memberOfGroups: []
+`)
+	write("people/jsmith.yml", `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    email: jsmith@example.com
+    enabled: true
+    memberOfGroups: [engineering]
+`)
+	write("apps/spa.yaml", `
+apiVersion: declarativeauth.io/v1
+kind: OIDCClientList
+clients:
+  - clientID: spa
+    redirectURIs: ["http://localhost:9000/callback"]
+    public: true
+`)
+	// Unrelated YAML: valid YAML, but no recognized header at all -- must
+	// not cause an error and must not be mistaken for one of ours.
+	write("notes/README.yaml", "title: just some notes\nnotAConfigFile: true\n")
+
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(snap.Groups) != 1 || snap.Groups["engineering"].Name != "engineering" {
+		t.Fatalf("expected 1 group 'engineering', got %+v", snap.Groups)
+	}
+	if len(snap.Users) != 1 || snap.Users["jsmith"].Email != "jsmith@example.com" {
+		t.Fatalf("expected 1 user 'jsmith', got %+v", snap.Users)
+	}
+	if len(snap.OIDCClients) != 1 {
+		t.Fatalf("expected 1 OIDC client, got %+v", snap.OIDCClients)
+	}
+}
+
+// TestLoadIdentity_IgnoresWrongAPIVersion covers a file that looks almost
+// right (has apiVersion/kind, valid YAML) but declares a different
+// apiVersion -- must be ignored, not misinterpreted.
+func TestLoadIdentity_IgnoresWrongAPIVersion(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "users.yaml"), []byte(`
+apiVersion: something-else/v2
+kind: UserList
+users:
+  - username: shouldnotload
+    enabled: true
+`), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(snap.Users) != 0 {
+		t.Fatalf("expected the mismatched-apiVersion file to be ignored, got users: %+v", snap.Users)
+	}
+}
+
+// TestLoadIdentity_EmptyDirNoError covers the "zero users is not a load
+// error" requirement -- LoadIdentity itself stays silent about it (callers
+// like the watcher and the CLI are responsible for warning).
+func TestLoadIdentity_EmptyDirNoError(t *testing.T) {
+	snap, err := LoadIdentity(t.TempDir())
+	if err != nil {
+		t.Fatalf("unexpected error for an empty identity dir: %v", err)
+	}
+	if len(snap.Users) != 0 || len(snap.Groups) != 0 || len(snap.OIDCClients) != 0 {
+		t.Fatalf("expected an entirely empty snapshot, got %+v", snap)
+	}
+}
+
+// TestLoadIdentity_SkipsKubernetesConfigMapInternals simulates the layout
+// Kubernetes actually mounts a ConfigMap volume as: a "..data" symlink to a
+// timestamped real directory holding the actual content, plus one symlink
+// per key at the mount root pointing through "..data". Without skipping
+// dot-prefixed directories, walking into the timestamped directory would
+// visit every file a second time and every entry would come back
+// "duplicate".
+func TestLoadIdentity_SkipsKubernetesConfigMapInternals(t *testing.T) {
+	dir := t.TempDir()
+	backing := filepath.Join(dir, "..2024_01_01_00_00_00.000000000")
+	if err := os.Mkdir(backing, 0o755); err != nil {
+		t.Fatalf("mkdir backing: %v", err)
+	}
+	usersYAML := `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    enabled: true
+`
+	if err := os.WriteFile(filepath.Join(backing, "users.yaml"), []byte(usersYAML), 0o644); err != nil {
+		t.Fatalf("write backing users.yaml: %v", err)
+	}
+	dataLink := filepath.Join(dir, "..data")
+	if err := os.Symlink(backing, dataLink); err != nil {
+		t.Skipf("symlinks unavailable in this environment: %v", err)
+	}
+	if err := os.Symlink(filepath.Join("..data", "users.yaml"), filepath.Join(dir, "users.yaml")); err != nil {
+		t.Fatalf("symlink users.yaml: %v", err)
+	}
+
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(snap.Users) != 1 {
+		t.Fatalf("expected exactly 1 user (no duplicate via ..data traversal), got %d: %+v", len(snap.Users), snap.Users)
+	}
+}

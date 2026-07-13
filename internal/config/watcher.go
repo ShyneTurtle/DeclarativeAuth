@@ -4,6 +4,8 @@ import (
 	"log/slog"
 	"time"
 
+	"declarativeauth/internal/identity"
+
 	"github.com/fsnotify/fsnotify"
 )
 
@@ -56,7 +58,19 @@ func (w *Watcher) LoadInitial() error {
 			"oidc_clients", len(snap.OIDCClients),
 		)
 	}
+	w.warnIfNoUsers(snap)
 	return nil
+}
+
+// warnIfNoUsers logs a warning when a snapshot declares zero users -- not a
+// load error (a fresh/bootstrapping deployment legitimately has none yet),
+// but nobody can log in until at least one exists, so it's worth flagging
+// loudly rather than only discovering it via failed logins.
+func (w *Watcher) warnIfNoUsers(snap *identity.Snapshot) {
+	if w.Logger != nil && len(snap.Users) == 0 {
+		w.Logger.Warn("identity config declares zero users -- no one can log in until at least one is declared",
+			"component", "config")
+	}
 }
 
 // Run watches for changes and hot-reloads until ctx-like stop via close of
@@ -149,6 +163,7 @@ func (w *Watcher) reload() {
 			"oidc_clients_modified", diff.OIDCClientsModified,
 		)
 	}
+	w.warnIfNoUsers(snap)
 	if w.OnReload != nil {
 		w.OnReload(ReloadResult{Diff: diff})
 	}

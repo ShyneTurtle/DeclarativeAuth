@@ -1,14 +1,12 @@
 # DeclarativeAuth
 
 A lightweight authentication server where **who exists is a file, not a
-database row**. You declare users and groups (with recursive group
-inheritance) in two YAML files; DeclarativeAuth hot-reloads them and
-exposes that identity through both an LDAP server and an OIDC provider +
-hosted login page, so any downstream system can authenticate against it.
-Postgres is only used for what YAML can't express: password hashes,
-sessions, password-reset tokens, audit history, and brute-force lockouts.
-Everything else -- how the process itself runs -- is configured through
-environment variables.
+database row**. You declare users, groups (with recursive group
+inheritance), and OIDC clients in hot-reloaded YAML files; DeclarativeAuth 
+exposes that identity through both an LDAP server and an OIDC provider, so any
+downstream system can authenticate against it. Postgres is used for dynamic
+data: password hashes, sessions, password-reset tokens, audit history, and
+brute-force lockouts. The process configuration is done through env variables.
 
 ```
               users.yaml / groups.yaml   (declarative, hot-reloaded, "who exists")
@@ -31,8 +29,8 @@ This is a lightweight & secure alternative to hard to heavy (authentik), hard to
 
 ## Features
 
-- **Declarative identity** -- `users.yaml` / `groups.yaml`, hot-reloaded,
-  with recursive group inheritance (diamond-safe, cycle-detected).
+- **Declarative identity**: YAML, hot-reloaded, with recursive group
+  inheritance (diamond-safe, cycle-detected).
 - **Single static binary**, ~27MB container image, a few MB of RSS at idle.
 - **Passkey (WebAuthn) support**
 - **Username or email, interchangeably**, both resolve to the same account.
@@ -107,14 +105,23 @@ docker compose -f deploy/compose/docker-compose.yaml up -d
 
 Two separate kinds of input, deliberately different in shape:
 
-1. **Identity** (`users.yaml` + `groups.yaml`, and optionally
-   `oidc-clients.yaml`), declarative YAML, hot-reloaded. See 
-   [`examples/identity/`](examples/identity/), there's no dynamic OIDC
-   client registration `oidc-clients.yaml` is the only way to register one
-   an absent file just means no clients are registered, and the discovery
-   documents at `/.well-known/openid-configuration` and 
-   `/.well-known/jwks.json` are always served regardless, so client 
-   libraries can still auto-discover this issuer.
+1. **Identity**: users, groups, and OIDC clients: declarative YAML,
+   hot-reloaded. Every `.yaml`/`.yml` file under
+   `DECLARATIVEAUTH_IDENTITY_PATH` is read and used for identity if it
+   contains the right config header, if not it is ignored (allows having
+   other config files in the folder without problems). A file that declares a
+   recognized header is validated strictly, so a typo in one is a real
+   error, not something silently dropped. See
+   [`examples/identity/`](examples/identity/) for a worked example of each
+   kind. Zero declared groups is fine as long as no user references one;
+   zero declared users isn't an error either, but logs a startup/reload
+   warning, since nobody can log in until at least one exists. OIDC clients
+   are optional too, but there is no dynamic client registration, 
+   `oidc-clients.yaml` is the only way to register one, and an absent file
+   just means none are registered; the discovery documents at
+   `/.well-known/openid-configuration` and `/.well-known/jwks.json` are
+   always served regardless, so client libraries can still auto-discover
+   this issuer.
 2. **Server config** -- *how the process runs*: listeners, database DSN,
    SMTP, rate limiting, TLS, admin UI. Entirely `DECLARATIVEAUTH_*`
    environment variables, set once at process start. See
