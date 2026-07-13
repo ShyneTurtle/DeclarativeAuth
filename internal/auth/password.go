@@ -10,6 +10,7 @@ import (
 	"encoding/base64"
 	"fmt"
 	"strings"
+	"sync"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -36,6 +37,27 @@ var DefaultArgon2Params = Argon2Params{
 // Hasher hashes and verifies passwords using Argon2id.
 type Hasher struct {
 	Params Argon2Params
+
+	dummyOnce sync.Once
+	dummyHash string
+}
+
+// Dummy returns a fixed argon2id hash, generated once and cached, for
+// Authenticate to run Verify against when there's no real credential to
+// check (unknown username, disabled account, no credential row) -- so that
+// path costs the same ~20-50ms as a known-username-wrong-password one,
+// instead of returning almost immediately. Skipping Argon2id entirely for
+// "user doesn't exist" is a textbook enumeration-via-timing gap; this
+// closes it without ever hashing or storing anything derived from a real
+// password.
+func (h *Hasher) Dummy() string {
+	h.dummyOnce.Do(func() {
+		hash, err := h.Hash("dummy-password-for-constant-cost-comparison")
+		if err == nil {
+			h.dummyHash = hash
+		}
+	})
+	return h.dummyHash
 }
 
 // Hash returns a PHC-formatted argon2id hash string.

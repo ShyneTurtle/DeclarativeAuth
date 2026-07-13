@@ -430,3 +430,79 @@ func TestResetFlow_DeclarativePasswordHashBlocksReset(t *testing.T) {
 		t.Fatal("expected the attempted password change to have had no effect")
 	}
 }
+
+// countMessagesTo returns how many mailcatcher messages were sent to toEmail.
+func countMessagesTo(t *testing.T, api, toEmail string) int {
+	t.Helper()
+	resp, err := http.Get(api + "/messages")
+	if err != nil {
+		t.Fatalf("get messages: %v", err)
+	}
+	defer resp.Body.Close()
+	var msgs []mcMessage
+	if err := json.NewDecoder(resp.Body).Decode(&msgs); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	count := 0
+	for _, m := range msgs {
+		for _, rcpt := range m.Recipients {
+			if strings.Contains(rcpt, toEmail) {
+				count++
+				break
+			}
+		}
+	}
+	return count
+}
+
+// TestResetFlow_RateLimited proves the fix for the shared-IP-style DoS this
+// endpoint previously had no defense against at all: before this, nothing
+// stopped repeatedly POSTing the same identifier to mail-bomb a user's
+// inbox with reset links, since every response is intentionally identical
+// (no-enumeration) and issuing a token/sending mail was cheap (no Argon2id,
+// unlike login). Threshold=5 in this test server's config (see
+// startFullServerWithSMTPFixture) means 6 requests succeed before the 7th+
+// get throttled -- same "threshold+1" semantics as the login lockout in
+// lockout_test.go.
+func TestResetFlow_RateLimited(t *testing.T) {
+	api := mailcatcherAPI(t)
+	clearMailcatcher(t, api)
+
+	issuer, _ := startFullServerWithSMTP(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
+	u, _ := url.Parse(issuer + "/reset")
+	csrfFor := func() string {
+		resp, err := client.Get(issuer + "/reset")
+		if err != nil {
+			t.Fatalf("get /reset: %v", err)
+		}
+		resp.Body.Close()
+		for _, c := range jar.Cookies(u) {
+			if c.Name == "da_csrf" {
+				return c.Value
+			}
+		}
+		t.Fatal("expected da_csrf cookie")
+		return ""
+	}
+
+	for i := 0; i < 10; i++ {
+		csrf := csrfFor()
+		resp, err := client.PostForm(issuer+"/reset", url.Values{"email": {"jsmith@example.com"}, "csrf_token": {csrf}})
+		if err != nil {
+			t.Fatalf("post /reset (attempt %d): %v", i, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("attempt %d: expected 200 (same generic response regardless of throttling), got %d", i, resp.StatusCode)
+		}
+	}
+
+	// Give the last couple of sends a moment to land in mailcatcher.
+	time.Sleep(300 * time.Millisecond)
+	if got := countMessagesTo(t, api, "jsmith@example.com"); got != 6 {
+		t.Fatalf("expected exactly 6 reset emails out of 10 rapid requests (threshold=5 -> 6 allowed before throttling), got %d", got)
+	}
+}

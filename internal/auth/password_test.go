@@ -37,3 +37,14 @@ func TestHash_UniqueSaltsPerCall(t *testing.T) {
 		t.Fatal("expected distinct hashes for the same password due to random salt")
 	}
 }
+
+func TestHasher_Dummy(t *testing.T) {
+	h := &Hasher{Params: DefaultArgon2Params}
+	hash := h.Dummy()
+	if !ValidHashFormat(hash) {
+		t.Fatalf("expected Dummy() to return a well-formed argon2id hash, got %q", hash)
+	}
+	if again := h.Dummy(); again != hash {
+		t.Fatalf("expected Dummy() to cache and return the same hash on repeated calls, got %q then %q", hash, again)
+	}
+}

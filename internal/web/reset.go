@@ -31,6 +31,16 @@ type ResetHandlers struct {
 	BaseURL  string // e.g. "https://auth.example.com", used to build the emailed link
 	Policy   auth.PasswordPolicy
 	Logger   *slog.Logger
+
+	// RateLimiter throttles /reset submissions (a namespaced instance, see
+	// auth.RateLimiter.KeyPrefix, so it doesn't share a budget with login
+	// lockouts). Without this, nothing stops repeatedly POSTing the same
+	// identifier to mail-bomb a user's inbox with reset links -- each
+	// request is otherwise cheap (no Argon2 hashing, unlike login) and the
+	// generic "check your email" response never reveals a match either
+	// way, so there was no other signal an attacker would even need to
+	// avoid to spam a known address. Optional: nil disables throttling.
+	RateLimiter *auth.RateLimiter
 }
 
 // CurrentUser resolves the requester's authenticated username from the web
@@ -122,13 +132,13 @@ func (h *ResetHandlers) handleReset(w http.ResponseWriter, r *http.Request, tp *
 		token := IssueCSRFToken(w, r, secure)
 		render(w, resetRequestTmpl, map[string]any{"Title": "Reset password", "CSRFToken": token, "ReturnTo": returnTo})
 	case http.MethodPost:
-		h.handleResetSubmit(w, r, secure)
+		h.handleResetSubmit(w, r, secure, tp)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}
 }
 
-func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request, secure bool) {
+func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request, secure bool, tp *auth.TrustedProxies) {
 	returnTo := sanitizeReturnTo(r.FormValue("return_to"))
 	if !ValidCSRF(r) {
 		render(w, resetRequestTmpl, map[string]any{"Title": "Reset password", "Error": "Your session expired, please try again.", "CSRFToken": IssueCSRFToken(w, r, secure), "ReturnTo": returnTo})
@@ -142,12 +152,30 @@ func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	snap := h.Snapshot()
+	username, resolved := snap.ResolveIdentifier(identifier)
+	sourceIP := tp.ClientIP(r).String()
+	// Always record the attempt (whether or not the identifier resolved)
+	// and always check both dimensions before sending anything, so the
+	// throttle itself can't be used to distinguish a known identifier from
+	// an unknown one -- same no-enumeration property as the response body
+	// below.
+	locked := false
+	if h.RateLimiter != nil {
+		var err error
+		locked, err = h.RateLimiter.IsLocked(ctx, username, sourceIP)
+		if err != nil && h.Logger != nil {
+			h.Logger.Error("reset rate limit check failed", "component", "web", "error", err)
+		}
+		if err := h.RateLimiter.RecordFailure(ctx, username, sourceIP); err != nil && h.Logger != nil {
+			h.Logger.Error("reset rate limit record failed", "component", "web", "error", err)
+		}
+	}
 	// A declaratively-hashed account (see identity.User.PasswordHash) has
 	// no Postgres-stored credential to reset -- silently skip issuing a
-	// token/email for it, same as an unrecognized identifier, so the
-	// response below never reveals which case applied (no user
-	// enumeration either way).
-	if username, ok := snap.ResolveIdentifier(identifier); ok && snap.Users[username].PasswordHash == "" {
+	// token/email for it, same as an unrecognized identifier or a
+	// throttled request, so the response below never reveals which case
+	// applied (no user enumeration either way).
+	if resolved && !locked && snap.Users[username].PasswordHash == "" {
 		target := snap.Users[username]
 		raw, _ := randomToken(32)
 		tokenHash := hashToken(raw)

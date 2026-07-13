@@ -72,10 +72,18 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 
 	user, ok := snap.Users[username]
 	if !known || !ok {
+		// Deliberately still pays the Argon2id cost (against a fixed dummy
+		// hash, see Hasher.Dummy) before returning, rather than bailing out
+		// immediately -- otherwise "unknown username" is measurably faster
+		// than "known username, wrong password", a classic timing side
+		// channel an attacker could use to enumerate valid usernames even
+		// though every response body already looks identical.
+		_, _ = a.Hasher.Verify(password, a.Hasher.Dummy())
 		a.recordFailure(ctx, username, sourceIP)
 		return nil, &AuthError{Reason: ReasonUnknownUser}
 	}
 	if !user.Enabled {
+		_, _ = a.Hasher.Verify(password, a.Hasher.Dummy())
 		a.recordFailure(ctx, username, sourceIP)
 		return nil, &AuthError{Reason: ReasonDisabled}
 	}
@@ -92,6 +100,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 		cred, err := a.Credentials.Get(ctx, username)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
+				_, _ = a.Hasher.Verify(password, a.Hasher.Dummy())
 				a.recordFailure(ctx, username, sourceIP)
 				return nil, &AuthError{Reason: ReasonNoCredential}
 			}

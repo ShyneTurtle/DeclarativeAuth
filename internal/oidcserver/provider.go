@@ -2,6 +2,7 @@ package oidcserver
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
@@ -154,7 +155,7 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{"error": "invalid_client"})
 		return
 	}
-	if !client.Public && r.FormValue("client_secret") != client.ClientSecret {
+	if !client.Public && subtle.ConstantTimeCompare([]byte(r.FormValue("client_secret")), []byte(client.ClientSecret)) != 1 {
 		writeJSON(w, map[string]any{"error": "invalid_client"})
 		return
 	}

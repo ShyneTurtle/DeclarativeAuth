@@ -49,21 +49,32 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		return fmt.Errorf("parsing %s: %w", config.EnvNetworkTrustedProxies, err)
 	}
 
+	lockouts := &store.LockoutStore{Pool: pool}
+	lockoutParams := auth.ParamsFromConfig(
+		cfg.RateLimit.Threshold,
+		cfg.RateLimit.BackoffBase.Std(),
+		cfg.RateLimit.BackoffMax.Std(),
+		cfg.RateLimit.Window.Std(),
+	)
+
 	sessionStore := &store.SessionStore{Pool: pool}
 	authenticator := &auth.Authenticator{
 		Snapshot:    holder.Get,
 		Credentials: &store.CredentialStore{Pool: pool},
 		Hasher:      &auth.Hasher{Params: auth.DefaultArgon2Params},
 		RateLimiter: &auth.RateLimiter{
-			Lockouts: &store.LockoutStore{Pool: pool},
-			Params: auth.ParamsFromConfig(
-				cfg.RateLimit.Threshold,
-				cfg.RateLimit.BackoffBase.Std(),
-				cfg.RateLimit.BackoffMax.Std(),
-				cfg.RateLimit.Window.Std(),
-			),
+			Lockouts: lockouts,
+			Params:   lockoutParams,
 		},
 		Logger: logger,
+	}
+	// Same store and thresholds as login, but namespaced (KeyPrefix) so
+	// password-reset spam and login brute-forcing don't share a budget --
+	// see auth.RateLimiter.KeyPrefix and web.ResetHandlers.RateLimiter.
+	resetRateLimiter := &auth.RateLimiter{
+		Lockouts:  lockouts,
+		Params:    lockoutParams,
+		KeyPrefix: "reset:",
 	}
 	auditStore := &store.AuditStore{Pool: pool}
 	hasher := &auth.Hasher{Params: auth.DefaultArgon2Params}
@@ -193,7 +204,8 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				MinLength:   cfg.PasswordPolicy.MinLength,
 				MinStrength: cfg.PasswordPolicy.MinStrength,
 			},
-			Logger: logger,
+			Logger:      logger,
+			RateLimiter: resetRateLimiter,
 		}
 		resetHandlers.RegisterRoutes(webMux, trustedProxies, sessions.CurrentUser, cfg.AdminUI.AdminGroup)
 
