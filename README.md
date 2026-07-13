@@ -43,7 +43,9 @@ This is a lightweight & secure alternative to hard to heavy (authentik), hard to
 - **SMTP-based password reset & MFA**: configurable minimum length & strength
   policy, group & per-user enforceable MFA (users can still opt in even when
   not enforced, but they can't opt out if they are).
-- **Persisted brute-force backoff**, shared across LDAP and OIDC/web login.
+- **Persisted brute-force backoff**, shared across LDAP and OIDC/web login,
+  opt-in (disabled by default -- a hard lockout is itself a DoS lever; see
+  `DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD` in `examples/.env.example`).
 - **Environment-variable configuration**
 - **Hardened password storage**: Argon2id.
 - **Reverse-proxy aware**: correct client IP/scheme handling for rate

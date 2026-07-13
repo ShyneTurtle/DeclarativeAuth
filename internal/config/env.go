@@ -63,6 +63,11 @@ const (
 	EnvRateLimitBackoffMax  = "DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_MAX"
 	EnvRateLimitWindow      = "DECLARATIVEAUTH_RATE_LIMIT_WINDOW"
 
+	EnvRateLimitIPThreshold   = "DECLARATIVEAUTH_RATE_LIMIT_IP_THRESHOLD"
+	EnvRateLimitIPBackoffBase = "DECLARATIVEAUTH_RATE_LIMIT_IP_BACKOFF_BASE"
+	EnvRateLimitIPBackoffMax  = "DECLARATIVEAUTH_RATE_LIMIT_IP_BACKOFF_MAX"
+	EnvRateLimitIPWindow      = "DECLARATIVEAUTH_RATE_LIMIT_IP_WINDOW"
+
 	EnvAdminUIEnabled             = "DECLARATIVEAUTH_ADMIN_UI_ENABLED"
 	EnvAdminUIAdminGroup          = "DECLARATIVEAUTH_ADMIN_UI_ADMIN_GROUP"
 	EnvAdminUIConfigEditorEnabled = "DECLARATIVEAUTH_ADMIN_UI_CONFIG_EDITOR_ENABLED"
@@ -186,7 +191,11 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 		}
 		cfg.Network.TrustDefaultGateway = &b
 	}
-	if cfg.RateLimit.Threshold, err = getenvInt(EnvRateLimitThreshold, 5); err != nil {
+	// Disabled (0) by default: a hard lockout -- account or IP -- is itself
+	// a denial-of-service lever for anyone who knows a target's username,
+	// or shares a NAT/VPN/CGNAT egress IP with an attacker. Operators who
+	// want it can opt in; see the DoS tradeoff noted in .env.example.
+	if cfg.RateLimit.Threshold, err = getenvInt(EnvRateLimitThreshold, 0); err != nil {
 		return nil, err
 	}
 	if cfg.RateLimit.BackoffBase, err = getenvDuration(EnvRateLimitBackoffBase, time.Second); err != nil {
@@ -196,6 +205,21 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 		return nil, err
 	}
 	if cfg.RateLimit.Window, err = getenvDuration(EnvRateLimitWindow, 24*time.Hour); err != nil {
+		return nil, err
+	}
+	// Independent from the account dimension above: its own threshold
+	// (disabled by default, same reasoning), its own backoff/window. A
+	// deployment can run one dimension, both, or neither.
+	if cfg.RateLimit.IPThreshold, err = getenvInt(EnvRateLimitIPThreshold, 0); err != nil {
+		return nil, err
+	}
+	if cfg.RateLimit.IPBackoffBase, err = getenvDuration(EnvRateLimitIPBackoffBase, time.Second); err != nil {
+		return nil, err
+	}
+	if cfg.RateLimit.IPBackoffMax, err = getenvDuration(EnvRateLimitIPBackoffMax, 15*time.Minute); err != nil {
+		return nil, err
+	}
+	if cfg.RateLimit.IPWindow, err = getenvDuration(EnvRateLimitIPWindow, 24*time.Hour); err != nil {
 		return nil, err
 	}
 	if cfg.AdminUI.Enabled, err = getenvBool(EnvAdminUIEnabled, true); err != nil {

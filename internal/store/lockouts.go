@@ -91,7 +91,15 @@ func (s *LockoutStore) Reset(ctx context.Context, key string) error {
 // current failure count and configured params, returns the lockout duration
 // and whether a lockout should be applied at all. Exported and dependency-free
 // so it can be unit-tested without Postgres.
+//
+// Threshold <= 0 means the lockout is disabled outright (never locks,
+// regardless of count) -- not "lock on the very first failure", which is
+// what a naive count <= p.Threshold check would do at Threshold == 0. This
+// is the config-disabled default; see DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD.
 func ComputeBackoff(count int, p LockoutParams) (time.Duration, bool) {
+	if p.Threshold <= 0 {
+		return 0, false
+	}
 	if count <= p.Threshold {
 		return 0, false
 	}

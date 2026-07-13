@@ -236,10 +236,22 @@ func (c NetworkConfig) TrustsDefaultGateway() bool {
 }
 
 type RateLimitConfig struct {
+	// Account dimension: keyed by username, independent of source IP.
 	Threshold   int
 	BackoffBase Duration
 	BackoffMax  Duration
 	Window      Duration
+
+	// IP dimension: keyed by source IP, independent of username. Separate
+	// knobs from the account dimension above (not just a separate
+	// threshold) so each can be enabled, disabled, and tuned on its own --
+	// e.g. a deployment behind a shared NAT/VPN/CGNAT egress might want
+	// this dimension off (or a much higher threshold) while keeping a
+	// tight account-dimension threshold, without the two being coupled.
+	IPThreshold   int
+	IPBackoffBase Duration
+	IPBackoffMax  Duration
+	IPWindow      Duration
 }
 
 type AdminUIConfig struct {

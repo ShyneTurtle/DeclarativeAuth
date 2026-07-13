@@ -104,13 +104,29 @@ data:
   # DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY: "false"
 
   # ---- Brute-force backoff ------------------------------------------------------
-  DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD: "5"
+  # Two independent dimensions (account: THRESHOLD/BACKOFF_*/WINDOW below;
+  # IP: IP_THRESHOLD/IP_BACKOFF_*/IP_WINDOW further below), each disabled by
+  # default -- a hard lockout is itself a denial-of-service lever either way
+  # (anyone who knows a username, or shares a NAT/VPN/CGNAT egress IP with an
+  # attacker, can trigger one). See the full tradeoff writeup in
+  # examples/.env.example before opting into either -- especially if MFA
+  # isn't enforced for every account, which covers similar ground without it.
+  # Default: 0 (disabled)
+  # DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD: "5"
   # Default: 1s
   # DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_BASE: 1s
   # Default: 15m
   # DECLARATIVEAUTH_RATE_LIMIT_BACKOFF_MAX: 15m
   # Default: 24h
   # DECLARATIVEAUTH_RATE_LIMIT_WINDOW: 24h
+  # Default: 0 (disabled)
+  # DECLARATIVEAUTH_RATE_LIMIT_IP_THRESHOLD: "20"
+  # Default: 1s
+  # DECLARATIVEAUTH_RATE_LIMIT_IP_BACKOFF_BASE: 1s
+  # Default: 15m
+  # DECLARATIVEAUTH_RATE_LIMIT_IP_BACKOFF_MAX: 15m
+  # Default: 24h
+  # DECLARATIVEAUTH_RATE_LIMIT_IP_WINDOW: 24h
 
   # ---- Admin UI ------------------------------------------------------------------
   DECLARATIVEAUTH_ADMIN_UI_ENABLED: "true"

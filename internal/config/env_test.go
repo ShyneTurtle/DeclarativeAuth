@@ -37,9 +37,13 @@ func TestLoadServerConfigFromEnv_Defaults(t *testing.T) {
 	if !cfg.Network.TrustsDefaultGateway() {
 		t.Error("expected TrustsDefaultGateway to default true")
 	}
-	if cfg.RateLimit.Threshold != 5 || cfg.RateLimit.BackoffBase.Std() != time.Second ||
+	if cfg.RateLimit.Threshold != 0 || cfg.RateLimit.BackoffBase.Std() != time.Second ||
 		cfg.RateLimit.BackoffMax.Std() != 15*time.Minute || cfg.RateLimit.Window.Std() != 24*time.Hour {
-		t.Errorf("unexpected rate limit defaults: %+v", cfg.RateLimit)
+		t.Errorf("unexpected rate limit (account dimension) defaults: %+v", cfg.RateLimit)
+	}
+	if cfg.RateLimit.IPThreshold != 0 || cfg.RateLimit.IPBackoffBase.Std() != time.Second ||
+		cfg.RateLimit.IPBackoffMax.Std() != 15*time.Minute || cfg.RateLimit.IPWindow.Std() != 24*time.Hour {
+		t.Errorf("unexpected rate limit (IP dimension) defaults: %+v", cfg.RateLimit)
 	}
 	if !cfg.AdminUI.Enabled {
 		t.Error("expected AdminUI.Enabled to default true")
@@ -77,6 +81,7 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvNetworkTrustedProxies, "10.0.0.0/8, 192.168.1.0/24")
 	t.Setenv(EnvNetworkTrustDefaultGateway, "false")
 	t.Setenv(EnvRateLimitThreshold, "10")
+	t.Setenv(EnvRateLimitIPThreshold, "20")
 	t.Setenv(EnvAdminUIEnabled, "false")
 	t.Setenv(EnvSMTPPassword, "s3cret")
 	t.Setenv(EnvSMTPImplicitTLS, "true")
@@ -112,6 +117,9 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	}
 	if cfg.RateLimit.Threshold != 10 {
 		t.Errorf("unexpected rate limit threshold: %d", cfg.RateLimit.Threshold)
+	}
+	if cfg.RateLimit.IPThreshold != 20 {
+		t.Errorf("unexpected rate limit IP threshold: %d", cfg.RateLimit.IPThreshold)
 	}
 	if cfg.AdminUI.Enabled {
 		t.Error("expected AdminUI.Enabled=false override to apply")

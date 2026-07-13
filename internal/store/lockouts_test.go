@@ -41,3 +41,23 @@ func TestComputeBackoff_CappedAtMax(t *testing.T) {
 		t.Fatalf("expected backoff capped at %v, got %v", p.BackoffMax, d)
 	}
 }
+
+func TestComputeBackoff_ZeroThresholdDisablesLockout(t *testing.T) {
+	p := LockoutParams{Threshold: 0, BackoffBase: time.Second, BackoffMax: 15 * time.Minute}
+	// A naive `count <= p.Threshold` check would lock on the very first
+	// failure when Threshold is 0 -- confirm that's not what happens: 0
+	// means disabled, not "zero-tolerance".
+	if _, locked := ComputeBackoff(1, p); locked {
+		t.Fatal("expected Threshold=0 to disable lockout, not lock on the first failure")
+	}
+	if _, locked := ComputeBackoff(1000, p); locked {
+		t.Fatal("expected Threshold=0 to disable lockout regardless of failure count")
+	}
+}
+
+func TestComputeBackoff_NegativeThresholdDisablesLockout(t *testing.T) {
+	p := LockoutParams{Threshold: -1, BackoffBase: time.Second, BackoffMax: 15 * time.Minute}
+	if _, locked := ComputeBackoff(1000, p); locked {
+		t.Fatal("expected a negative Threshold to disable lockout")
+	}
+}

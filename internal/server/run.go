@@ -49,32 +49,47 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		return fmt.Errorf("parsing %s: %w", config.EnvNetworkTrustedProxies, err)
 	}
 
-	lockouts := &store.LockoutStore{Pool: pool}
-	lockoutParams := auth.ParamsFromConfig(
-		cfg.RateLimit.Threshold,
-		cfg.RateLimit.BackoffBase.Std(),
-		cfg.RateLimit.BackoffMax.Std(),
-		cfg.RateLimit.Window.Std(),
-	)
+	// Each dimension defaults to disabled (DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD
+	// / _IP_THRESHOLD <= 0) and is independently configurable: a hard
+	// lockout is itself a denial-of-service lever (the account dimension
+	// against one known username, the IP dimension against every user
+	// sharing a NAT/VPN/CGNAT egress IP), so operators opt in to whichever
+	// dimension(s) fit their deployment rather than getting either by
+	// default. When both are disabled, skip constructing the limiter
+	// entirely (not just neutering its decisions) so a fully-disabled
+	// feature doesn't still cost a Postgres round-trip on every
+	// login/reset attempt -- Authenticate and handleResetSubmit both
+	// already treat a nil RateLimiter as "unthrottled". When only one
+	// dimension is enabled, RateLimiter itself skips the disabled one.
+	var loginRateLimiter, resetRateLimiter *auth.RateLimiter
+	if cfg.RateLimit.Threshold > 0 || cfg.RateLimit.IPThreshold > 0 {
+		lockouts := &store.LockoutStore{Pool: pool}
+		userParams := auth.ParamsFromConfig(
+			cfg.RateLimit.Threshold,
+			cfg.RateLimit.BackoffBase.Std(),
+			cfg.RateLimit.BackoffMax.Std(),
+			cfg.RateLimit.Window.Std(),
+		)
+		ipParams := auth.ParamsFromConfig(
+			cfg.RateLimit.IPThreshold,
+			cfg.RateLimit.IPBackoffBase.Std(),
+			cfg.RateLimit.IPBackoffMax.Std(),
+			cfg.RateLimit.IPWindow.Std(),
+		)
+		loginRateLimiter = &auth.RateLimiter{Lockouts: lockouts, Params: userParams, IPParams: ipParams}
+		// Same store and thresholds as login, but namespaced (KeyPrefix) so
+		// password-reset spam and login brute-forcing don't share a budget
+		// -- see auth.RateLimiter.KeyPrefix and web.ResetHandlers.RateLimiter.
+		resetRateLimiter = &auth.RateLimiter{Lockouts: lockouts, Params: userParams, IPParams: ipParams, KeyPrefix: "reset:"}
+	}
 
 	sessionStore := &store.SessionStore{Pool: pool}
 	authenticator := &auth.Authenticator{
 		Snapshot:    holder.Get,
 		Credentials: &store.CredentialStore{Pool: pool},
 		Hasher:      &auth.Hasher{Params: auth.DefaultArgon2Params},
-		RateLimiter: &auth.RateLimiter{
-			Lockouts: lockouts,
-			Params:   lockoutParams,
-		},
-		Logger: logger,
-	}
-	// Same store and thresholds as login, but namespaced (KeyPrefix) so
-	// password-reset spam and login brute-forcing don't share a budget --
-	// see auth.RateLimiter.KeyPrefix and web.ResetHandlers.RateLimiter.
-	resetRateLimiter := &auth.RateLimiter{
-		Lockouts:  lockouts,
-		Params:    lockoutParams,
-		KeyPrefix: "reset:",
+		RateLimiter: loginRateLimiter,
+		Logger:      logger,
 	}
 	auditStore := &store.AuditStore{Pool: pool}
 	hasher := &auth.Hasher{Params: auth.DefaultArgon2Params}
