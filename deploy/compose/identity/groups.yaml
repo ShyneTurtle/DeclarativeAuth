@@ -1,0 +1,16 @@
+# Starter groups for the homelab compose stack -- edit freely, or replace
+# entirely. This file is bind-mounted into the container (see
+# ../docker-compose.yaml) and hot-reloaded: no restart needed after an
+# edit, and (since DECLARATIVEAUTH_ADMIN_UI_CONFIG_EDITOR_ENABLED=true here)
+# it can also be edited straight from /admin instead of by hand.
+#
+# See examples/identity/groups.yaml for a fully-commented field reference
+# and a worked example of recursive group inheritance.
+
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: admins
+    description: "DeclarativeAuth administrators -- gates access to the admin UI"
+    memberOfGroups: []
+    requireMFA: true

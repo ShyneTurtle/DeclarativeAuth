@@ -55,17 +55,17 @@ This is a lightweight & secure alternative to hard to heavy (authentik), hard to
   group-inheritance graph, and optionally edit/save the declarative files from the browser
   (can be disabled, single-instance deployments only (might change in the future)).
 
-## Try it out
-
-This spins up DeclarativeAuth plus Postgres and a
-[mailcatcher](https://mailcatcher.me/) (so you can see password-reset
-emails without a real SMTP server) using the example identity in
-[`examples/identity/`](examples/identity/):
+## Demo: Try it out
 
 ```sh
-cp deploy/compose/.env.example deploy/compose/.env
-docker compose -f deploy/compose/docker-compose.yaml up -d --build
+docker compose -f deploy/demo/docker-compose.yaml up -d --build
 ```
+
+This spins up DeclarativeAuth, Postgres and a
+[mailcatcher](https://mailcatcher.me/) (so you can see password-reset
+emails without a real SMTP server) using the example identity in
+[`examples/identity/`](examples/identity/), no persistence, unsecure listeners,
+nothing to configure. See [`deploy/demo/`](deploy/demo/):
 
 | What | Where |
 |---|---|
@@ -81,9 +81,8 @@ The example identity declares users but no passwords.
 You can either use the forgot password form, or set one via CLI:
 
 ```sh
-docker compose -f deploy/compose/docker-compose.yaml exec declarativeauth \
+docker compose -f deploy/demo/docker-compose.yaml exec declarativeauth \
   /declarativeauth admin set-password \
-  -dsn "postgres://declarativeauth:declarativeauth@postgres:5432/declarativeauth?sslmode=disable" \
   -username jsmith -password Secret123!
 ```
 
@@ -96,11 +95,13 @@ ldapsearch -x -H ldap://localhost:1389 \
   -b ou=users,dc=example,dc=com "(memberOf=cn=engineering,ou=groups,dc=example,dc=com)" uid memberOf
 ```
 
-`jsmith` isn't declared as a member of `engineering` directly (see
-[`examples/identity/groups.yaml`](examples/identity/groups.yaml)) -- this
-search only returns a result because `engineering` is a transitive
-grandparent via `oncall` -> `backend-team` -> `engineering`, and
-DeclarativeAuth flattens that automatically.
+Ready to run this for real (on a NAS, a home server, whatever) instead of
+just poking at it? [`deploy/compose/`](deploy/compose/) is a homelab-ready
+single-instance stack instead: persistent Postgres, TLS on by default:
+
+```sh
+docker compose -f deploy/compose/docker-compose.yaml up -d
+```
 
 ## Configuring your own deployment
 
@@ -166,7 +167,9 @@ internal/             application code (see "Architecture" below)
 examples/identity/    a worked users.yaml/groups.yaml example (diamond group inheritance)
 deploy/
   docker/             production Dockerfile
-  compose/            docker-compose quickstart stack + the Go toolchain dev container
+  compose/            homelab-ready single-instance docker-compose stack (persistent, TLS on)
+  demo/               throwaway docker-compose stack for click-through testing (mailcatcher, no TLS)
+  dev/                the Go toolchain dev container used to build/test the code itself
   kubernetes/         Deployment/Service/ConfigMap/Secret/Certificate/CNPG-Cluster examples
 examples/.env.example every DECLARATIVEAUTH_* environment variable, with defaults/docs
 test/integration/     integration tests (real Postgres, real SMTP, real LDAP client)

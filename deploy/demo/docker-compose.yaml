@@ -1,0 +1,33 @@
+# Throwaway demo stack - plaintext listeners, mailcatcher instead of a real
+# SMTP relay, no data persistence.
+services:
+  declarativeauth:
+    build:
+      context: ../..
+      dockerfile: deploy/docker/Dockerfile
+    env_file:
+      - .env.example
+    ports:
+      - "1389:389"
+      - "8080:8080"
+      - "9090:9090"
+    volumes:
+      - ../../examples/identity:/etc/declarativeauth/identity:ro
+    depends_on:
+      - postgres
+      - mailcatcher
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_USER=declarativeauth
+      - POSTGRES_PASSWORD=declarativeauth
+      - POSTGRES_DB=declarativeauth
+    ports:
+      - "5432:5432"
+
+  mailcatcher:
+    image: sj26/mailcatcher
+    ports:
+      - "1080:1080"
+      - "1025:1025"

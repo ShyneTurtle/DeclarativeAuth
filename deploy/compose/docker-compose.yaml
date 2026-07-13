@@ -1,39 +1,42 @@
-# Production-image quickstart stack for manual click-through testing
-# (login, password reset email, LDAP search). Run from the repo root:
+# Homelab-ready, single-instance stack: persistent Postgres, TLS on by
+# default (self-signed unless you mount real certs), your own identity files.
+# You must have an SMTP relay to send email.
 #
-#   cp deploy/compose/.env.example deploy/compose/.env
-#   docker compose -f deploy/compose/docker-compose.yaml up -d --build
+# ./identity/ (users.yaml/groups.yaml, seeded with a starter example) and
+# ./tls/ (optional cert.pem/key.pem) are bind-mounted from this directory --
+# see .env.example for what to edit before going further than "it starts".
 #
-# For the Go toolchain dev environment used to build/test the code itself,
-# see docker-compose.dev.yml in this same directory instead.
+# For a throwaway demo stack instead (mailcatcher, no persistence, no TLS),
+# see deploy/demo/.
 services:
   declarativeauth:
-    build:
-      context: ../..
-      dockerfile: deploy/docker/Dockerfile
+    image: ghcr.io/shyneturtle/declarativeauth:latest
+    restart: unless-stopped
     env_file:
       - .env
     ports:
-      - "1389:389"
-      - "8080:8080"
-      - "9090:9090"
+      - "636:636"   # LDAPS
+      - "8443:8443" # HTTPS -- web login, OIDC, admin UI
     volumes:
-      - ../../examples/identity:/etc/declarativeauth/identity:ro
+      # Read-write: DECLARATIVEAUTH_ADMIN_UI_CONFIG_EDITOR_ENABLED=true
+      # lets /admin save straight back to these files, which only makes
+      # sense (and is only safe) because this is a single instance.
+      - ./identity:/etc/declarativeauth/identity
+      # Optional real certs (cert.pem/key.pem) -- an empty/missing ./tls
+      # just means the self-signed fallback is used instead (fine to start
+      # with, don't rely on it long-term, or use a reverse proxy).
+      # See DECLARATIVEAUTH_TLS_CERT_FILE/_KEY_FILE in .env.example.
+      - ./tls:/etc/declarativeauth/tls:ro
     depends_on:
       - postgres
-      - mailcatcher
 
   postgres:
     image: postgres:16-alpine
-    environment:
-      - POSTGRES_USER=declarativeauth
-      - POSTGRES_PASSWORD=declarativeauth
-      - POSTGRES_DB=declarativeauth
-    ports:
-      - "5432:5432"
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
 
-  mailcatcher:
-    image: sj26/mailcatcher
-    ports:
-      - "1080:1080"
-      - "1025:1025"
+volumes:
+  postgres-data:

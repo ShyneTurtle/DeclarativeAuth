@@ -1,0 +1,20 @@
+# Starter users for the homelab compose stack -- edit freely, or replace
+# entirely. No password lives in this file, ever -- set one for "admin"
+# below after first boot:
+#
+#   docker compose exec declarativeauth \
+#     /declarativeauth admin set-password \
+#     -username admin -password <a real password>
+#
+# or use the "forgot password" flow once your SMTP relay is configured.
+# See examples/identity/users.yaml for a fully-commented field reference.
+
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: admin
+    email: admin@home.example
+    displayName: "Admin"
+    enabled: true
+    memberOfGroups:
+      - admins
