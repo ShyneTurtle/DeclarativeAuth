@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"declarativeauth/internal/auth"
 	"declarativeauth/internal/identity"
 
 	"sigs.k8s.io/yaml"
@@ -113,6 +114,11 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 				if u.Enabled != nil {
 					enabled = *u.Enabled
 				}
+				passwordHash, hashSourceBytes, err := resolvePasswordHash(dir, f, u)
+				if err != nil {
+					return nil, err
+				}
+				rawBytes = append(rawBytes, hashSourceBytes...)
 				users[u.Username] = identity.User{
 					Username:       u.Username,
 					Email:          u.Email,
@@ -122,6 +128,7 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 					Enabled:        enabled,
 					MemberOfGroups: u.MemberOfGroups,
 					MFAEnabled:     u.MFAEnabled,
+					PasswordHash:   passwordHash,
 				}
 			}
 
@@ -175,6 +182,41 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 		LoadedAt:          time.Now(),
 		SourceHash:        hashBytes(rawBytes),
 	}, nil
+}
+
+// resolvePasswordHash resolves a UserSpec's PasswordHash/PasswordHashFile
+// into the hash string identity.User.PasswordHash should carry, plus the
+// raw bytes actually read for it. Those raw bytes get folded into the
+// overall SourceHash right alongside the containing file's own bytes, so a
+// mounted secret's content -- not just the YAML that references it -- is
+// part of what determines whether a reload actually changed anything (a
+// rotated secret must count as a change even if users.yaml itself didn't).
+func resolvePasswordHash(dir, f string, u UserSpec) (hash string, raw []byte, err error) {
+	if u.PasswordHash != "" && u.PasswordHashFile != "" {
+		return "", nil, fmt.Errorf("%s: user %q sets both passwordHash and passwordHashFile, use only one", f, u.Username)
+	}
+	if u.PasswordHash != "" {
+		if !auth.ValidHashFormat(u.PasswordHash) {
+			return "", nil, fmt.Errorf("%s: user %q passwordHash is not a recognized $argon2id$ hash", f, u.Username)
+		}
+		return u.PasswordHash, []byte(u.PasswordHash), nil
+	}
+	if u.PasswordHashFile != "" {
+		path := u.PasswordHashFile
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(dir, path)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return "", nil, fmt.Errorf("%s: user %q passwordHashFile %s: %w", f, u.Username, u.PasswordHashFile, err)
+		}
+		hash := strings.TrimSpace(string(b))
+		if !auth.ValidHashFormat(hash) {
+			return "", nil, fmt.Errorf("%s: user %q passwordHashFile %s does not contain a recognized $argon2id$ hash", f, u.Username, u.PasswordHashFile)
+		}
+		return hash, b, nil
+	}
+	return "", nil, nil
 }
 
 // yamlFilesUnder recursively finds every *.yaml/*.yml file under dir, in a

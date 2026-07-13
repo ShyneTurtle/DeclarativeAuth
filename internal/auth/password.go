@@ -64,6 +64,17 @@ func (h *Hasher) Verify(password, encoded string) (bool, error) {
 	return subtle.ConstantTimeCompare(candidate, key) == 1, nil
 }
 
+// ValidHashFormat reports whether encoded is a well-formed PHC argon2id
+// hash string (the same format Hash produces) -- checked structurally,
+// without verifying any password against it. Used to fail loudly at
+// config-load time on a malformed declaratively-supplied hash (see
+// config.UserSpec.PasswordHash/PasswordHashFile), rather than only
+// discovering it's broken the first time someone tries to log in.
+func ValidHashFormat(encoded string) bool {
+	_, _, _, err := decodeHash(encoded)
+	return err == nil
+}
+
 func decodeHash(encoded string) (Argon2Params, []byte, []byte, error) {
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {

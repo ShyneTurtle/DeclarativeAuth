@@ -27,8 +27,10 @@ type UserFile struct {
 	Users      []UserSpec `json:"users"`
 }
 
-// UserSpec is a single declared user. No password/secret field exists here
-// by design — credentials live in Postgres, never in the declarative files.
+// UserSpec is a single declared user. Credentials normally live in
+// Postgres, never in the declarative files -- but PasswordHash/
+// PasswordHashFile below are the deliberate, explicit exception, for
+// accounts that are themselves config-managed (see their doc comments).
 type UserSpec struct {
 	Username       string   `json:"username"`
 	Email          string   `json:"email"`
@@ -43,6 +45,28 @@ type UserSpec struct {
 	// group-level RequireMFA or the user's own self-service opt-in
 	// (managed from their profile page, not here) can still require it.
 	MFAEnabled bool `json:"mfaEnabled"`
+	// PasswordHash is an optional pre-computed Argon2id hash, in the same
+	// PHC string format auth.Hasher.Hash produces (e.g.
+	// "$argon2id$v=19$m=...,t=...,p=...$salt$hash") -- generate one with
+	// `declarativeauth admin hash-password`. Declaring this makes the
+	// account's credential entirely config-managed: Postgres is bypassed at
+	// login, and both the self-service reset flow and `admin set-password`
+	// refuse to touch it. Mutually exclusive with PasswordHashFile.
+	// Intended for accounts that are themselves config-managed (LDAP
+	// service/bind accounts, CI users), not a person who'd want self-service
+	// password changes -- and since it's committed to the identity file
+	// as-is, prefer PasswordHashFile when that file lives in version control.
+	PasswordHash string `json:"passwordHash"`
+	// PasswordHashFile points at a file -- typically a mounted Docker or
+	// Kubernetes secret -- whose entire trimmed contents is the same
+	// PHC-format hash PasswordHash would otherwise be inlined as. This is
+	// what replaces an init-container-that-runs-admin-set-password: mount
+	// the secret, point this field at it, done -- no imperative bootstrap
+	// step, and it hot-reloads like everything else in the identity
+	// directory (see internal/config.LoadIdentity). A relative path is
+	// resolved against the identity directory being loaded. Mutually
+	// exclusive with PasswordHash.
+	PasswordHashFile string `json:"passwordHashFile"`
 }
 
 // OIDCClientFile is the on-disk shape of oidc-clients.yaml. This file is

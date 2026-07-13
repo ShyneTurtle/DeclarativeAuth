@@ -121,7 +121,21 @@ Two separate kinds of input, deliberately different in shape:
    just means none are registered; the discovery documents at
    `/.well-known/openid-configuration` and `/.well-known/jwks.json` are
    always served regardless, so client libraries can still auto-discover
-   this issuer.
+   this issuer. A user's credential is normally set out-of-band (CLI or
+   self-service reset, both write to Postgres) -- but a user can instead
+   declare `passwordHash` (an inline Argon2id hash) or `passwordHashFile`
+   (the same hash, read from a file -- typically a mounted Docker or
+   Kubernetes secret) directly in the identity YAML. This is for accounts
+   that are themselves config-managed, e.g. an LDAP service/bind account:
+   it eliminates the need for an init container that runs
+   `admin set-password` on every startup, and it hot-reloads (including
+   secret rotation) the same as everything else here. Once set, Postgres is
+   bypassed entirely for that user, so both the self-service reset flow and
+   `admin set-password` refuse to touch the account. Generate the hash with
+   `declarativeauth admin hash-password`. See `svc-example` in
+   [`examples/identity/users.yaml`](examples/identity/users.yaml) and
+   [`deploy/kubernetes/secret-ldap-passwords.yaml`](deploy/kubernetes/secret-ldap-passwords.yaml)
+   for both flavors worked out.
 2. **Server config** -- *how the process runs*: listeners, database DSN,
    SMTP, rate limiting, TLS, admin UI. Entirely `DECLARATIVEAUTH_*`
    environment variables, set once at process start. See
@@ -139,8 +153,11 @@ to route around.
 For a from-scratch production layout (Kubernetes + CloudNativePG), see
 [`deploy/kubernetes/`](deploy/kubernetes/) -- `configmap-env.yaml` /
 `secret-example.yaml` for the non-secret/secret environment variables
-(consumed via `envFrom`), and `configmap-identity.yaml` for the same
-identity example, mounted as a volume so it can hot-reload.
+(consumed via `envFrom`), `configmap-identity.yaml` for the same identity
+example, mounted as a volume so it can hot-reload, and
+`secret-ldap-passwords.yaml` for a worked `passwordHashFile` example --
+mounted as a subdirectory of that same identity volume, so it hot-reloads
+too.
 
 ## CLI
 
@@ -149,6 +166,7 @@ declarativeauth serve             # run the server (default long-running process
 declarativeauth migrate           # apply Postgres migrations and exit
 declarativeauth validate-config   # validate users.yaml/groups.yaml/oidc-clients.yaml without starting anything
 declarativeauth admin set-password    # seed/reset a password directly (bootstrap/testing)
+declarativeauth admin hash-password   # print an Argon2id hash for a password, for passwordHash/passwordHashFile
 ```
 
 `validate-config` reuses the exact same parse+validate code path the
@@ -156,7 +174,7 @@ running server uses (so results never diverge), and prints a summary:
 
 ```
 $ declarativeauth validate-config -identity-path examples/identity
-config valid: 5 groups, 3 users (1 disabled), 2 oidc clients
+config valid: 5 groups, 4 users (1 disabled), 2 oidc clients
 ```
 
 Use it in CI or a pre-commit hook against your real identity files, before

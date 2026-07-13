@@ -80,16 +80,28 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 		return nil, &AuthError{Reason: ReasonDisabled}
 	}
 
-	cred, err := a.Credentials.Get(ctx, username)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			a.recordFailure(ctx, username, sourceIP)
-			return nil, &AuthError{Reason: ReasonNoCredential}
+	// A declaratively-hashed user (identity.User.PasswordHash, set via
+	// config.UserSpec.PasswordHash/PasswordHashFile) is entirely
+	// config-managed: Postgres is never consulted for it, so a
+	// self-service reset or `admin set-password` run against it (both of
+	// which refuse to, see internal/web/reset.go and cmd_admin.go) could
+	// never have had any effect anyway.
+	storedHash := user.PasswordHash
+	mustReset := false
+	if storedHash == "" {
+		cred, err := a.Credentials.Get(ctx, username)
+		if err != nil {
+			if errors.Is(err, store.ErrNotFound) {
+				a.recordFailure(ctx, username, sourceIP)
+				return nil, &AuthError{Reason: ReasonNoCredential}
+			}
+			return nil, err
 		}
-		return nil, err
+		storedHash = cred.PasswordHash
+		mustReset = cred.MustReset
 	}
 
-	ok, err = a.Hasher.Verify(password, cred.PasswordHash)
+	ok, err := a.Hasher.Verify(password, storedHash)
 	if err != nil {
 		return nil, err
 	}
@@ -103,7 +115,7 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 			return nil, err
 		}
 	}
-	return &Result{Username: username, MustReset: cred.MustReset}, nil
+	return &Result{Username: username, MustReset: mustReset}, nil
 }
 
 func (a *Authenticator) recordFailure(ctx context.Context, username, sourceIP string) {

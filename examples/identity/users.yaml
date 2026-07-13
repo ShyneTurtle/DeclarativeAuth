@@ -4,10 +4,14 @@
 # AND engineering, despite only "oncall" and "backend-team" being listed
 # here directly).
 #
-# No password lives in this file, ever -- credentials are stored (as
+# By default, no password lives in this file -- credentials are stored (as
 # Argon2id hashes) in Postgres, set separately via:
 #   declarativeauth admin set-password -username <user> -password <pw> ...
-# or by an admin sending a self-service setup link from the admin UI.
+# or by an admin sending a self-service setup link from the admin UI. The
+# deliberate exception is passwordHash/passwordHashFile below, for accounts
+# that are themselves config-managed (LDAP service/bind accounts, CI users)
+# rather than a person who'd want self-service password changes -- see
+# svc-example at the bottom of this file.
 #
 # This file is hot-reloaded, same as groups.yaml -- no restart needed after
 # an edit. Run `declarativeauth validate-config` to catch mistakes (e.g. a
@@ -26,6 +30,17 @@
 #                     regardless of group membership. (A group's `requireMFA: true` in groups.yaml
 #                     does the same for every member, direct or transitive. Either source is enough;
 #                     a user can also self-enable MFA from their profile page independently of both.)
+#   passwordHash      optional Argon2id hash (generate with `declarativeauth admin hash-password`),
+#                     declared directly instead of set via the CLI/self-service reset. Makes the
+#                     account entirely config-managed: Postgres is bypassed at login, and both the
+#                     self-service reset flow and `admin set-password` refuse to touch it. Mutually
+#                     exclusive with passwordHashFile. Since it's committed as-is, prefer
+#                     passwordHashFile when this file lives in version control.
+#   passwordHashFile  same as passwordHash, but read from a file -- typically a mounted Docker or
+#                     Kubernetes secret -- instead of inlined here. This is what replaces an
+#                     init-container-that-runs-admin-set-password: mount the secret, point this at
+#                     it, done. Hot-reloads like everything else here; a relative path resolves
+#                     against this identity directory. Mutually exclusive with passwordHash.
 
 apiVersion: declarativeauth.io/v1
 kind: UserList
@@ -53,3 +68,13 @@ users:
     enabled: false          # Disabled: the account and its group memberships stay declared, but login is refused.
     memberOfGroups:
       - platform-team
+
+  - username: svc-example
+    displayName: "Example LDAP service account"
+    enabled: true
+    memberOfGroups: []
+    # Password is "Secret123!", entirely config-managed -- no
+    # `admin set-password` bootstrap step, no self-service reset. See
+    # deploy/kubernetes/secret-ldap-passwords.yaml for the
+    # passwordHashFile flavor of the same thing.
+    passwordHash: "$argon2id$v=19$m=19456,t=2,p=1$9XREVr0dmc+INRR5msVGxw$BH4aum3hpF3jydAuCSr0PioxTWmte0VdfDsxUIF5iM8"

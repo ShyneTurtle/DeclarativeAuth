@@ -32,6 +32,13 @@ data:
         displayName: "System Admin"
         enabled: true
         memberOfGroups: [admins]
+      # A config-managed LDAP bind account -- its password is entirely
+      # declarative (see secret-ldap-passwords.yaml), so it needs no
+      # `admin set-password` bootstrap step and has no self-service reset.
+      - username: svc-ldap
+        enabled: true
+        memberOfGroups: []
+        passwordHashFile: secrets/svc-ldap.hash
   # Optional -- absent/empty means no OIDC clients are registered. See
   # examples/identity/oidc-clients.yaml for a fully-commented example with
   # both a public (SPA) and confidential client.

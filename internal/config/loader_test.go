@@ -294,6 +294,162 @@ func TestLoadIdentity_EmptyDirNoError(t *testing.T) {
 // dot-prefixed directories, walking into the timestamped directory would
 // visit every file a second time and every entry would come back
 // "duplicate".
+// testHash is a real $argon2id$ hash for "Secret123!" (generated via
+// `declarativeauth admin hash-password`), used to test the declarative
+// passwordHash/passwordHashFile plumbing without needing DefaultArgon2Params
+// or the auth package's Hasher directly in this package's tests.
+const testHash = "$argon2id$v=19$m=19456,t=2,p=1$9XREVr0dmc+INRR5msVGxw$BH4aum3hpF3jydAuCSr0PioxTWmte0VdfDsxUIF5iM8"
+
+func writeUsersYAML(t *testing.T, dir, content string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(dir, "users.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write users.yaml: %v", err)
+	}
+}
+
+func TestLoadIdentity_PasswordHashInline(t *testing.T) {
+	dir := t.TempDir()
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    enabled: true
+    passwordHash: "`+testHash+`"
+`)
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.Users["svc-ldap"].PasswordHash != testHash {
+		t.Fatalf("expected inline passwordHash to carry through, got %q", snap.Users["svc-ldap"].PasswordHash)
+	}
+}
+
+func TestLoadIdentity_PasswordHashFileRelative(t *testing.T) {
+	dir := t.TempDir()
+	// Trailing newline, as a mounted secret file commonly has -- must be trimmed.
+	if err := os.WriteFile(filepath.Join(dir, "svc-ldap.hash"), []byte(testHash+"\n"), 0o644); err != nil {
+		t.Fatalf("write hash file: %v", err)
+	}
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    enabled: true
+    passwordHashFile: svc-ldap.hash
+`)
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.Users["svc-ldap"].PasswordHash != testHash {
+		t.Fatalf("expected passwordHashFile content to resolve and trim, got %q", snap.Users["svc-ldap"].PasswordHash)
+	}
+}
+
+func TestLoadIdentity_PasswordHashFileAbsolute(t *testing.T) {
+	dir := t.TempDir()
+	secretsDir := t.TempDir() // simulates a secret mounted outside the identity tree
+	hashFile := filepath.Join(secretsDir, "svc-ldap.hash")
+	if err := os.WriteFile(hashFile, []byte(testHash), 0o644); err != nil {
+		t.Fatalf("write hash file: %v", err)
+	}
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    enabled: true
+    passwordHashFile: `+hashFile+`
+`)
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.Users["svc-ldap"].PasswordHash != testHash {
+		t.Fatalf("expected absolute passwordHashFile to resolve, got %q", snap.Users["svc-ldap"].PasswordHash)
+	}
+}
+
+func TestLoadIdentity_PasswordHashBothSetIsError(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "svc-ldap.hash"), []byte(testHash), 0o644); err != nil {
+		t.Fatalf("write hash file: %v", err)
+	}
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    enabled: true
+    passwordHash: "`+testHash+`"
+    passwordHashFile: svc-ldap.hash
+`)
+	if _, err := LoadIdentity(dir); err == nil {
+		t.Fatal("expected error for setting both passwordHash and passwordHashFile, got nil")
+	}
+}
+
+func TestLoadIdentity_PasswordHashInvalidFormat(t *testing.T) {
+	dir := t.TempDir()
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    enabled: true
+    passwordHash: "not-a-real-hash"
+`)
+	if _, err := LoadIdentity(dir); err == nil {
+		t.Fatal("expected error for a malformed passwordHash, got nil")
+	}
+}
+
+func TestLoadIdentity_PasswordHashFileMissing(t *testing.T) {
+	dir := t.TempDir()
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    enabled: true
+    passwordHashFile: does-not-exist.hash
+`)
+	if _, err := LoadIdentity(dir); err == nil {
+		t.Fatal("expected error for a missing passwordHashFile, got nil")
+	}
+}
+
+func TestLoadIdentity_PasswordHashFileInvalidContent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "svc-ldap.hash"), []byte("garbage"), 0o644); err != nil {
+		t.Fatalf("write hash file: %v", err)
+	}
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    enabled: true
+    passwordHashFile: svc-ldap.hash
+`)
+	if _, err := LoadIdentity(dir); err == nil {
+		t.Fatal("expected error for a passwordHashFile with malformed content, got nil")
+	}
+}
+
+func TestLoadIdentity_NoPasswordHashIsFine(t *testing.T) {
+	snap, err := LoadIdentity(fixture("valid"))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if snap.Users["jsmith"].PasswordHash != "" {
+		t.Fatalf("expected no declarative passwordHash for jsmith, got %q", snap.Users["jsmith"].PasswordHash)
+	}
+}
+
 func TestLoadIdentity_SkipsKubernetesConfigMapInternals(t *testing.T) {
 	dir := t.TempDir()
 	backing := filepath.Join(dir, "..2024_01_01_00_00_00.000000000")

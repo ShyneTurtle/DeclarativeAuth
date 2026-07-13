@@ -79,6 +79,10 @@ func (h *ResetHandlers) handleSendSetupLink(w http.ResponseWriter, r *http.Reque
 		w.WriteHeader(http.StatusNotFound)
 		return
 	}
+	if target.PasswordHash != "" {
+		http.Error(w, "this account's password is set declaratively (passwordHash/passwordHashFile) and can't be changed here", http.StatusConflict)
+		return
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
@@ -138,7 +142,12 @@ func (h *ResetHandlers) handleResetSubmit(w http.ResponseWriter, r *http.Request
 	defer cancel()
 
 	snap := h.Snapshot()
-	if username, ok := snap.ResolveIdentifier(identifier); ok {
+	// A declaratively-hashed account (see identity.User.PasswordHash) has
+	// no Postgres-stored credential to reset -- silently skip issuing a
+	// token/email for it, same as an unrecognized identifier, so the
+	// response below never reveals which case applied (no user
+	// enumeration either way).
+	if username, ok := snap.ResolveIdentifier(identifier); ok && snap.Users[username].PasswordHash == "" {
 		target := snap.Users[username]
 		raw, _ := randomToken(32)
 		tokenHash := hashToken(raw)
@@ -176,8 +185,20 @@ func (h *ResetHandlers) handleResetConfirm(w http.ResponseWriter, r *http.Reques
 	switch r.Method {
 	case http.MethodGet:
 		token := r.URL.Query().Get("token")
-		if token == "" || !h.Tokens.Peek(r.Context(), hashToken(token)) {
+		username, ok := "", false
+		if token != "" {
+			username, ok = h.Tokens.Peek(r.Context(), hashToken(token))
+		}
+		if !ok {
 			render(w, errorTmpl, errorPageData{Title: "Invalid link", Message: "This link is invalid or has expired."})
+			return
+		}
+		// The account can have become declaratively managed (see
+		// identity.User.PasswordHash) after this link was emailed --
+		// checked here too, not just on submit, so the user finds out
+		// immediately instead of after filling in the form.
+		if h.Snapshot().Users[username].PasswordHash != "" {
+			render(w, errorTmpl, errorPageData{Title: "Password managed by your administrator", Message: "Your password is managed by your administrator."})
 			return
 		}
 		returnTo := sanitizeReturnTo(r.URL.Query().Get("return_to"))
@@ -247,6 +268,14 @@ func (h *ResetHandlers) handleResetConfirmSubmit(w http.ResponseWriter, r *http.
 	result, err := h.Tokens.Consume(ctx, hashToken(token))
 	if err != nil {
 		render(w, errorTmpl, errorPageData{Title: "Invalid link", Message: "This link is invalid, expired, or has already been used."})
+		return
+	}
+	// The identity snapshot can change between the GET check above and this
+	// POST (e.g. an admin declares a passwordHash for this account while
+	// the form was open) -- re-check here too rather than trusting the GET
+	// check alone.
+	if h.Snapshot().Users[result.Username].PasswordHash != "" {
+		render(w, errorTmpl, errorPageData{Title: "Password managed by your administrator", Message: "Your password is managed by your administrator."})
 		return
 	}
 

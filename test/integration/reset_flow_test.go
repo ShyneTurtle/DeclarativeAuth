@@ -4,7 +4,12 @@ package integration
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -17,6 +22,7 @@ import (
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/metrics"
 	"declarativeauth/internal/server"
+	"declarativeauth/internal/store"
 )
 
 // mailcatcherAPI is the mailcatcher HTTP API base URL, reachable from inside
@@ -110,6 +116,11 @@ func itoa(n int) string {
 
 func startFullServerWithSMTP(t *testing.T) (issuer string, holder *config.SnapshotHolder) {
 	t.Helper()
+	return startFullServerWithSMTPFixture(t, "valid")
+}
+
+func startFullServerWithSMTPFixture(t *testing.T, identityFixture string) (issuer string, holder *config.SnapshotHolder) {
+	t.Helper()
 	pool := setupPool(t)
 
 	oidcAddr := freePort(t)
@@ -131,7 +142,7 @@ func startFullServerWithSMTP(t *testing.T) (issuer string, holder *config.Snapsh
 	}
 
 	holder = &config.SnapshotHolder{}
-	snap, err := config.LoadIdentity(fixturePath("valid"))
+	snap, err := config.LoadIdentity(fixturePath(identityFixture))
 	if err != nil {
 		t.Fatalf("load identity: %v", err)
 	}
@@ -350,5 +361,72 @@ func TestResetFlow_ReturnToThreadedThroughToLogin(t *testing.T) {
 
 	if got := resp.Request.URL.RequestURI(); got != "/authorize?client_id=example" {
 		t.Fatalf("expected reset to land back at the original return_to, got %s", got)
+	}
+}
+
+// TestResetFlow_DeclarativePasswordHashBlocksReset proves the guard end to
+// end: even given a technically-valid, unexpired reset token for an account
+// whose password is declaratively managed (identity.User.PasswordHash --
+// e.g. issued before an admin declared the hash, then the config reloaded),
+// clicking the link must show "your password is managed by your
+// administrator" instead of the set-a-new-password form, and must not let
+// a POST to the same endpoint change anything.
+func TestResetFlow_DeclarativePasswordHashBlocksReset(t *testing.T) {
+	issuer, _ := startFullServerWithSMTPFixture(t, "password-hash")
+
+	pool, err := poolFor(t, testDSN(t))
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	tokens := &store.ResetTokenStore{Pool: pool}
+
+	// Mint a token directly (bypassing POST /reset, which already refuses
+	// to issue one for a declaratively-hashed account -- this simulates the
+	// race the GET-time check exists for: a token issued before the
+	// account became declaratively managed).
+	raw := make([]byte, 32)
+	if _, err := rand.Read(raw); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	rawToken := base64.RawURLEncoding.EncodeToString(raw)
+	sum := sha256.Sum256([]byte(rawToken))
+	tokenHash := hex.EncodeToString(sum[:])
+	if err := tokens.Create(context.Background(), tokenHash, "svc-ldap", 30*time.Minute); err != nil {
+		t.Fatalf("create token: %v", err)
+	}
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar}
+
+	resp, err := client.Get(issuer + "/reset/confirm?token=" + rawToken)
+	if err != nil {
+		t.Fatalf("get confirm: %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if !strings.Contains(string(body), "Your password is managed by your administrator") {
+		t.Fatalf("expected the declarative-password message, got: %s", body)
+	}
+	if strings.Contains(string(body), "password_confirm") {
+		t.Fatalf("expected no set-password form to be rendered, got: %s", body)
+	}
+
+	// Belt and suspenders: a POST with this same token must not be able to
+	// set a Postgres credential either, even though the token itself is
+	// otherwise valid and unused.
+	resp2, err := client.PostForm(issuer+"/reset/confirm", url.Values{
+		"token": {rawToken}, "password": {"WouldNotWork1!"}, "password_confirm": {"WouldNotWork1!"},
+	})
+	if err != nil {
+		t.Fatalf("post confirm: %v", err)
+	}
+	defer resp2.Body.Close()
+	authenticator := buildAuthenticator(pool, &config.SnapshotHolder{}, defaultLockoutParams())
+	snap, _ := config.LoadIdentity(fixturePath("password-hash"))
+	holderForCheck := &config.SnapshotHolder{}
+	holderForCheck.Set(snap)
+	authenticator.Snapshot = holderForCheck.Get
+	if _, err := authenticator.Authenticate(context.Background(), "svc-ldap", "WouldNotWork1!", "203.0.113.1"); err == nil {
+		t.Fatal("expected the attempted password change to have had no effect")
 	}
 }

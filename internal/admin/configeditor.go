@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html/template"
+	"io/fs"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -27,17 +28,18 @@ func fileNameFor(fileKey string) (string, bool) {
 	}
 }
 
-// editableFileKeys are every file the config editor round-trips through
-// LoadIdentity for cross-validation -- see validateEdit. oidc-clients.yaml
-// is optional (see internal/config.LoadIdentity), so it's fine if it
-// doesn't exist on disk yet.
-var editableFileKeys = []string{"users", "groups", "oidc-clients"}
-
-// validateEdit re-validates fileKey's proposed content against the *other*
-// files currently on disk, by writing all of them into a scratch temp
-// directory and running it through the exact same
+// validateEdit re-validates fileKey's proposed content against everything
+// else currently in the identity directory, by copying the *entire* real
+// identity tree into a scratch directory, overlaying fileKey's proposed
+// content on top, and running it through the exact same
 // internal/config.LoadIdentity path used at startup/reload/CLI
-// validate-config -- no separate/divergent validation logic to keep in sync.
+// validate-config -- no separate/divergent validation logic to keep in
+// sync. Copying the whole tree (not just the file being edited) matters
+// because identity content can now be split across arbitrarily many/nested
+// files (see internal/config.LoadIdentity), and because a relative
+// passwordHashFile reference needs the same directory layout during
+// live-validation as it has for the real running server, or it would
+// report a spurious "file not found".
 func (h *Handlers) validateEdit(fileKey, content string) error {
 	tmpDir, err := os.MkdirTemp("", "declarativeauth-edit-*")
 	if err != nil {
@@ -45,27 +47,40 @@ func (h *Handlers) validateEdit(fileKey, content string) error {
 	}
 	defer os.RemoveAll(tmpDir)
 
-	for _, key := range editableFileKeys {
-		name, _ := fileNameFor(key)
-		var body []byte
-		if key == fileKey {
-			body = []byte(content)
-		} else {
-			body, err = os.ReadFile(filepath.Join(h.IdentityPath, name))
-			if err != nil {
-				if key == "oidc-clients" && os.IsNotExist(err) {
-					continue // optional file, nothing to carry into the scratch dir
-				}
-				return fmt.Errorf("reading current %s: %w", name, err)
-			}
-		}
-		if err := os.WriteFile(filepath.Join(tmpDir, name), body, 0o644); err != nil {
-			return err
-		}
+	if err := copyDirTree(h.IdentityPath, tmpDir); err != nil {
+		return fmt.Errorf("preparing validation scratch copy: %w", err)
+	}
+
+	name, _ := fileNameFor(fileKey)
+	if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
+		return err
 	}
 
 	_, err = config.LoadIdentity(tmpDir)
 	return err
+}
+
+// copyDirTree copies every regular file under src into dst, preserving the
+// relative directory layout.
+func copyDirTree(src, dst string) error {
+	return filepath.WalkDir(src, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(src, path)
+		if err != nil {
+			return err
+		}
+		target := filepath.Join(dst, rel)
+		if d.IsDir() {
+			return os.MkdirAll(target, 0o755)
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		return os.WriteFile(target, b, 0o644)
+	})
 }
 
 type configEditorData struct {

@@ -30,6 +30,14 @@ spec:
             - name: identity
               mountPath: /etc/declarativeauth/identity
               readOnly: true
+            # Mounted as a subdirectory of the identity volume above (not a
+            # separate top-level path) so the fsnotify-based hot-reload
+            # watcher covers it too -- rotating this Secret is enough to
+            # pick up a changed password, no restart needed. See
+            # secret-ldap-passwords.yaml and users.yaml's passwordHashFile.
+            - name: ldap-passwords
+              mountPath: /etc/declarativeauth/identity/secrets
+              readOnly: true
             - name: tls
               mountPath: /etc/declarativeauth/tls
               readOnly: true
@@ -51,5 +59,7 @@ spec:
       volumes:
         - name: identity
           configMap: { name: declarativeauth-identity }
+        - name: ldap-passwords
+          secret: { secretName: declarativeauth-ldap-passwords }
         - name: tls
           secret: { secretName: declarativeauth-tls }

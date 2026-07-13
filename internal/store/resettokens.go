@@ -33,19 +33,21 @@ func (s *ResetTokenStore) Create(ctx context.Context, tokenHash, username string
 }
 
 // Peek reports whether tokenHash exists, is unexpired and unused, without
-// consuming it. Used only to decide whether to render the "set a new
-// password" form on GET; the authoritative, race-free check happens in
-// Consume on the actual POST.
-func (s *ResetTokenStore) Peek(ctx context.Context, tokenHash string) bool {
+// consuming it, and returns the username it belongs to. Used only to decide
+// what to render on GET -- the "set a new password" form, or (for an
+// account whose password has since become declaratively managed) an
+// explanatory message instead of the form; the authoritative, race-free
+// check happens in Consume on the actual POST.
+func (s *ResetTokenStore) Peek(ctx context.Context, tokenHash string) (username string, ok bool) {
 	var expiresAt time.Time
 	var usedAt *time.Time
 	err := s.Pool.QueryRow(ctx,
-		`SELECT expires_at, used_at FROM password_reset_tokens WHERE token_hash = $1`,
-		tokenHash).Scan(&expiresAt, &usedAt)
+		`SELECT username, expires_at, used_at FROM password_reset_tokens WHERE token_hash = $1`,
+		tokenHash).Scan(&username, &expiresAt, &usedAt)
 	if err != nil {
-		return false
+		return "", false
 	}
-	return usedAt == nil && time.Now().Before(expiresAt)
+	return username, usedAt == nil && time.Now().Before(expiresAt)
 }
 
 // ConsumeResult is returned by Consume.

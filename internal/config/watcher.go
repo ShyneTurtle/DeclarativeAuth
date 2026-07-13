@@ -1,7 +1,11 @@
 package config
 
 import (
+	"io/fs"
 	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"declarativeauth/internal/identity"
@@ -75,6 +79,15 @@ func (w *Watcher) warnIfNoUsers(snap *identity.Snapshot) {
 
 // Run watches for changes and hot-reloads until ctx-like stop via close of
 // done channel; blocks, intended to run in its own goroutine.
+//
+// fsnotify has no native recursive-watch support, so every subdirectory
+// under IdentityPath is added individually (mirroring yamlFilesUnder's
+// dot-directory skip, for the same Kubernetes ConfigMap/Secret-internals
+// reason) -- this matters not just for arbitrarily nested identity YAML,
+// but for a passwordHashFile secret mounted under a subdirectory of
+// IdentityPath: without watching that subdirectory too, rotating the
+// secret would silently never trigger a reload. A directory created after
+// startup is picked up as its own Create event and added on the fly.
 func (w *Watcher) Run(stop <-chan struct{}) error {
 	fsw, err := fsnotify.NewWatcher()
 	if err != nil {
@@ -82,7 +95,7 @@ func (w *Watcher) Run(stop <-chan struct{}) error {
 	}
 	defer fsw.Close()
 
-	if err := fsw.Add(w.IdentityPath); err != nil {
+	if err := addRecursive(fsw, w.IdentityPath); err != nil {
 		return err
 	}
 
@@ -93,9 +106,16 @@ func (w *Watcher) Run(stop <-chan struct{}) error {
 		select {
 		case <-stop:
 			return nil
-		case _, ok := <-fsw.Events:
+		case ev, ok := <-fsw.Events:
 			if !ok {
 				return nil
+			}
+			if ev.Has(fsnotify.Create) {
+				if info, err := os.Stat(ev.Name); err == nil && info.IsDir() && !strings.HasPrefix(filepath.Base(ev.Name), ".") {
+					if err := addRecursive(fsw, ev.Name); err != nil && w.Logger != nil {
+						w.Logger.Error("failed to watch new identity subdirectory", "component", "config", "path", ev.Name, "error", err)
+					}
+				}
 			}
 			if timer == nil {
 				timer = time.AfterFunc(w.Debounce, func() {
@@ -118,6 +138,22 @@ func (w *Watcher) Run(stop <-chan struct{}) error {
 			w.reload()
 		}
 	}
+}
+
+// addRecursive adds root and every non-dot subdirectory under it to fsw.
+func addRecursive(fsw *fsnotify.Watcher, root string) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		if path != root && strings.HasPrefix(d.Name(), ".") {
+			return filepath.SkipDir
+		}
+		return fsw.Add(path)
+	})
 }
 
 func (w *Watcher) reload() {

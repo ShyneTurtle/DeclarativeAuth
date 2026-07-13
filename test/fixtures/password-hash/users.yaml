@@ -1,0 +1,23 @@
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc-ldap
+    email: svc-ldap@example.com
+    enabled: true
+    memberOfGroups:
+      - services
+    # Password is "Secret123!" -- resolved from the co-located
+    # svc-ldap.hash file, simulating a mounted Docker/Kubernetes secret.
+    # No Postgres credential is ever seeded for this user in tests that use
+    # this fixture -- login must work purely from this declarative hash.
+    passwordHashFile: svc-ldap.hash
+  - username: svc-inline
+    email: svc-inline@example.com
+    enabled: true
+    memberOfGroups: []
+    # Same password, this time hardcoded directly (not via a file).
+    passwordHash: "$argon2id$v=19$m=19456,t=2,p=1$9XREVr0dmc+INRR5msVGxw$BH4aum3hpF3jydAuCSr0PioxTWmte0VdfDsxUIF5iM8"
+  - username: normaluser
+    email: normaluser@example.com
+    enabled: true
+    memberOfGroups: []

@@ -30,6 +30,18 @@ type User struct {
 	// declarative flag can only turn MFA on, never override a self-service
 	// opt-in off.
 	MFAEnabled bool
+	// PasswordHash is an optional pre-computed Argon2id hash (config.UserSpec's
+	// passwordHash or passwordHashFile, resolved at load time), declared
+	// directly instead of set via the CLI or the self-service reset flow.
+	// When set, it's the ONLY credential ever checked for this user --
+	// Postgres-stored credentials are bypassed entirely (see
+	// auth.Authenticator.Authenticate) -- and the self-service reset flow
+	// and the CLI's admin set-password both refuse to touch the account,
+	// since anything they'd write to Postgres would silently have no effect
+	// on login. Intended for accounts that are themselves config-managed
+	// (LDAP service/bind accounts, CI users) rather than a person who'd want
+	// self-service password changes.
+	PasswordHash string
 }
 
 // DisplayNameOrDefault returns the user's explicit DisplayName if set,
