@@ -14,11 +14,13 @@ import (
 	"github.com/golang-jwt/jwt/v5"
 )
 
-// Provider is the minimal OIDC authorization-code+PKCE provider.
+// Provider is the minimal OIDC authorization-code+PKCE provider. Registered
+// clients are read from Snapshot() (identity.Snapshot.OIDCClients) on every
+// request rather than cached at startup, so oidc-clients.yaml edits
+// hot-reload the same way users.yaml/groups.yaml already do.
 type Provider struct {
 	Issuer      string
 	Keys        *KeySet
-	Clients     *ClientRegistry
 	Codes       *CodeStore
 	Snapshot    func() *identity.Snapshot
 	CurrentUser func(r *http.Request) (string, bool)
@@ -29,7 +31,6 @@ func NewProvider(cfg *config.ServerConfig, keys *KeySet, snapshot func() *identi
 	return &Provider{
 		Issuer:      cfg.OIDC.Issuer,
 		Keys:        keys,
-		Clients:     NewClientRegistry(cfg.OIDC.Clients),
 		Codes:       NewCodeStore(),
 		Snapshot:    snapshot,
 		CurrentUser: currentUser,
@@ -79,7 +80,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := q.Get("code_challenge")
 	codeChallengeMethod := q.Get("code_challenge_method")
 
-	client, ok := p.Clients.Get(clientID)
+	client, ok := p.Snapshot().OIDCClients[clientID]
 	if !ok || !RedirectURIAllowed(client, redirectURI) {
 		http.Error(w, "unknown client_id or redirect_uri", http.StatusBadRequest)
 		return
@@ -148,7 +149,7 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	verifier := r.FormValue("code_verifier")
 	clientID := r.FormValue("client_id")
 
-	client, ok := p.Clients.Get(clientID)
+	client, ok := p.Snapshot().OIDCClients[clientID]
 	if !ok {
 		writeJSON(w, map[string]any{"error": "invalid_client"})
 		return

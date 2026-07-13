@@ -12,13 +12,21 @@ import (
 )
 
 // LoadIdentity reads users.yaml/groups.yaml (or users.d/*.yaml, groups.d/*.yaml)
-// under dir, validates them, and returns a fully-resolved Snapshot.
+// and the optional oidc-clients.yaml (or oidc-clients.d/*.yaml) under dir,
+// validates them, and returns a fully-resolved Snapshot.
 func LoadIdentity(dir string) (*identity.Snapshot, error) {
-	groupFiles, err := globOrSingle(dir, "groups.yaml", "groups.d")
+	groupFiles, err := globOrSingle(dir, "groups.yaml", "groups.d", true)
 	if err != nil {
 		return nil, err
 	}
-	userFiles, err := globOrSingle(dir, "users.yaml", "users.d")
+	userFiles, err := globOrSingle(dir, "users.yaml", "users.d", true)
+	if err != nil {
+		return nil, err
+	}
+	// Optional: unlike users/groups, an OIDC-less deployment (LDAP-only, or
+	// no relying parties registered yet) is entirely normal, so a missing
+	// oidc-clients.yaml just means zero clients, not an error.
+	clientFiles, err := globOrSingle(dir, "oidc-clients.yaml", "oidc-clients.d", false)
 	if err != nil {
 		return nil, err
 	}
@@ -93,6 +101,39 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 		}
 	}
 
+	oidcClients := map[string]identity.OIDCClient{}
+	for _, f := range clientFiles {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", f, err)
+		}
+		rawBytes = append(rawBytes, b...)
+		var cf OIDCClientFile
+		if err := yaml.UnmarshalStrict(b, &cf); err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", f, err)
+		}
+		for _, c := range cf.Clients {
+			if c.ClientID == "" {
+				return nil, fmt.Errorf("%s: OIDC client with empty clientID", f)
+			}
+			if _, exists := oidcClients[c.ClientID]; exists {
+				return nil, fmt.Errorf("%s: duplicate OIDC clientID %q", f, c.ClientID)
+			}
+			if len(c.RedirectURIs) == 0 {
+				return nil, fmt.Errorf("%s: OIDC client %q has no redirectURIs", f, c.ClientID)
+			}
+			if !c.Public && c.ClientSecret == "" {
+				return nil, fmt.Errorf("%s: confidential OIDC client %q (public: false) must set clientSecret", f, c.ClientID)
+			}
+			oidcClients[c.ClientID] = identity.OIDCClient{
+				ClientID:     c.ClientID,
+				RedirectURIs: c.RedirectURIs,
+				Public:       c.Public,
+				ClientSecret: c.ClientSecret,
+			}
+		}
+	}
+
 	if err := identity.CheckReferences(users, groups); err != nil {
 		return nil, err
 	}
@@ -105,6 +146,7 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 	return &identity.Snapshot{
 		Users:             users,
 		Groups:            groups,
+		OIDCClients:       oidcClients,
 		FlattenedMemberOf: flattened,
 		LoadedAt:          time.Now(),
 		SourceHash:        hashBytes(rawBytes),
@@ -112,7 +154,9 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 }
 
 // globOrSingle returns [dir/single] if it exists, else dir/dirName/*.yaml.
-func globOrSingle(dir, single, dirName string) ([]string, error) {
+// If required is false and neither exists, it returns (nil, nil) instead of
+// an error.
+func globOrSingle(dir, single, dirName string, required bool) ([]string, error) {
 	singlePath := filepath.Join(dir, single)
 	if _, err := os.Stat(singlePath); err == nil {
 		return []string{singlePath}, nil
@@ -122,6 +166,9 @@ func globOrSingle(dir, single, dirName string) ([]string, error) {
 		return nil, err
 	}
 	if len(matches) == 0 {
+		if !required {
+			return nil, nil
+		}
 		return nil, fmt.Errorf("neither %s nor %s/*.yaml found under %s", single, dirName, dir)
 	}
 	return matches, nil

@@ -1,0 +1,30 @@
+# Declarative OIDC relying parties (clients). This is entirely optional --
+# an absent file (or an empty `clients:` list) simply means no OIDC clients
+# are registered yet
+#
+# The discovery documents (/.well-known/openid-configuration and
+# /.well-known/jwks.json) are unaffected by this file and always served --
+# any standard OIDC client library can still auto-configure itself against
+# this issuer, it just won't be able to complete a login until its
+# client_id is declared here.
+#
+# Field reference:
+#   clientID       (required) unique identifier the relying party sends as client_id.
+#   redirectURIs   (required, at least one) exact-match allowlist of callback URLs.
+#   public         (required) true = public client (SPA/mobile; PKCE required, no secret).
+#                              false = confidential client -- clientSecret must also be set.
+#   clientSecret   required when public is false; unused (and should be omitted) when public is true.
+
+apiVersion: declarativeauth.io/v1
+kind: OIDCClientList
+clients:
+  - clientID: example-spa
+    redirectURIs:
+      - http://localhost:9000/callback
+    public: true
+
+  - clientID: example-confidential-app
+    redirectURIs:
+      - https://app.example.com/callback
+    public: false
+    clientSecret: change-me-to-a-real-secret

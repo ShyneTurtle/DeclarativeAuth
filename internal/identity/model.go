@@ -53,12 +53,29 @@ func (u User) DisplayNameOrDefault() string {
 	}
 }
 
+// OIDCClient is a statically declared OIDC relying party -- no dynamic
+// client registration, declared the same way as users/groups: in
+// oidc-clients.yaml (optional; absent/empty means no clients registered),
+// hot-reloaded along with the rest of the identity Snapshot. The discovery
+// documents (/.well-known/openid-configuration, /.well-known/jwks.json) are
+// independent of this list and always served regardless.
+type OIDCClient struct {
+	ClientID     string
+	RedirectURIs []string
+	// Public, when true, marks this a public client (SPA/mobile): no
+	// ClientSecret, PKCE required. When false, it's confidential and
+	// ClientSecret must be set.
+	Public       bool
+	ClientSecret string
+}
+
 // Snapshot is an immutable, fully-resolved view of the declarative identity
 // config at a point in time. A new Snapshot is built on every successful
 // config load/reload and swapped in atomically.
 type Snapshot struct {
 	Users             map[string]User
 	Groups            map[string]Group
+	OIDCClients       map[string]OIDCClient
 	FlattenedMemberOf map[string][]string
 	LoadedAt          time.Time
 	SourceHash        string

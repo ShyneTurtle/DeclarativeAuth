@@ -1,7 +1,6 @@
 package config
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/url"
 	"os"
@@ -40,12 +39,6 @@ const (
 	EnvOIDCSecureListenAddr = "DECLARATIVEAUTH_OIDC_SECURE_LISTEN_ADDR"
 	EnvOIDCTLSCert          = "DECLARATIVEAUTH_OIDC_TLS_CERT_FILE"
 	EnvOIDCTLSKey           = "DECLARATIVEAUTH_OIDC_TLS_KEY_FILE"
-	// EnvOIDCClients holds a JSON array of {clientID, redirectURIs, public,
-	// clientSecret} objects -- the one field that doesn't map cleanly to a
-	// single scalar env var. e.g.:
-	//   [{"clientID":"example-client","redirectURIs":["http://localhost:9000/callback"],"public":true}]
-	// Deprecated: will be removed in a future release.
-	EnvOIDCClients = "DECLARATIVEAUTH_OIDC_CLIENTS"
 
 	EnvSMTPHost               = "DECLARATIVEAUTH_SMTP_HOST"
 	EnvSMTPPort               = "DECLARATIVEAUTH_SMTP_PORT"
@@ -170,11 +163,6 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 	}
 	if cfg.LDAP.AllowAnonymousBind, err = getenvBool(EnvLDAPAllowAnonymousBind, false); err != nil {
 		return nil, err
-	}
-	if v := os.Getenv(EnvOIDCClients); v != "" {
-		if err := json.Unmarshal([]byte(v), &cfg.OIDC.Clients); err != nil {
-			return nil, fmt.Errorf("%s: invalid JSON: %w", EnvOIDCClients, err)
-		}
 	}
 	if cfg.SMTP.Port, err = getenvInt(EnvSMTPPort, 0); err != nil {
 		return nil, err

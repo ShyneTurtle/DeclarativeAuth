@@ -32,3 +32,10 @@ data:
         displayName: "System Admin"
         enabled: true
         memberOfGroups: [admins]
+  # Optional -- absent/empty means no OIDC clients are registered. See
+  # examples/identity/oidc-clients.yaml for a fully-commented example with
+  # both a public (SPA) and confidential client.
+  oidc-clients.yaml: |
+    apiVersion: declarativeauth.io/v1
+    kind: OIDCClientList
+    clients: []

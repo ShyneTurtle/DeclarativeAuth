@@ -45,6 +45,28 @@ type UserSpec struct {
 	MFAEnabled bool `json:"mfaEnabled"`
 }
 
+// OIDCClientFile is the on-disk shape of oidc-clients.yaml. This file is
+// entirely optional -- an absent file (or an empty/missing clients list)
+// simply means no OIDC relying parties are registered, same as it did for
+// the old DECLARATIVEAUTH_OIDC_CLIENTS env var it replaces.
+type OIDCClientFile struct {
+	APIVersion string           `json:"apiVersion"`
+	Kind       string           `json:"kind"`
+	Clients    []OIDCClientSpec `json:"clients"`
+}
+
+// OIDCClientSpec is a single statically declared OIDC relying party. There
+// is no dynamic client registration -- this file is the only way to
+// register one.
+type OIDCClientSpec struct {
+	ClientID     string   `json:"clientID"`
+	RedirectURIs []string `json:"redirectURIs"`
+	// Public: true = public client (SPA/mobile; PKCE required, no secret).
+	// Public: false = confidential client -- ClientSecret must also be set.
+	Public       bool   `json:"public"`
+	ClientSecret string `json:"clientSecret"`
+}
+
 // ServerConfig is the server's runtime configuration: listeners, database,
 // SMTP, rate limiting, TLS, admin UI. It's built entirely from environment
 // variables by LoadServerConfigFromEnv (see env.go for the full list of
@@ -97,25 +119,15 @@ type LDAPConfig struct {
 }
 
 // OIDCConfig configures the OIDC/web listener(s), with the same independent
-// plaintext/secure split as LDAPConfig above.
+// plaintext/secure split as LDAPConfig above. The registered relying
+// parties themselves are not here -- see identity.Snapshot.OIDCClients,
+// declared in oidc-clients.yaml alongside users.yaml/groups.yaml, since
+// that's "who's allowed to log in" data, hot-reloaded the same way.
 type OIDCConfig struct {
 	Issuer           string
 	ListenAddr       string // plaintext HTTP, optional
 	SecureListenAddr string // HTTPS (TLS-terminating), optional
 	TLS              TLSListenerConfig
-	Clients          []OIDCClient
-}
-
-// OIDCClient is a statically declared OIDC relying party. There is no
-// dynamic client registration in v1 (no admin UI for it). The full list is
-// configured as one JSON-array environment variable (EnvOIDCClients),
-// since a list of objects doesn't map cleanly onto individual scalar env
-// vars.
-type OIDCClient struct {
-	ClientID     string   `json:"clientID"`
-	RedirectURIs []string `json:"redirectURIs"`
-	Public       bool     `json:"public"`
-	ClientSecret string   `json:"clientSecret"`
 }
 
 type TLSConfig struct {

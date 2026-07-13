@@ -133,21 +133,6 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	}
 }
 
-func TestLoadServerConfigFromEnv_OIDCClients(t *testing.T) {
-	t.Setenv(EnvOIDCClients, `[{"clientID":"web","redirectURIs":["https://app.example.com/callback"],"public":true}]`)
-	cfg, err := LoadServerConfigFromEnv()
-	if err != nil {
-		t.Fatalf("unexpected error: %v", err)
-	}
-	if len(cfg.OIDC.Clients) != 1 {
-		t.Fatalf("expected 1 OIDC client, got %d", len(cfg.OIDC.Clients))
-	}
-	c := cfg.OIDC.Clients[0]
-	if c.ClientID != "web" || !c.Public || len(c.RedirectURIs) != 1 || c.RedirectURIs[0] != "https://app.example.com/callback" {
-		t.Errorf("unexpected client: %+v", c)
-	}
-}
-
 func TestLoadServerConfigFromEnv_InvalidValues(t *testing.T) {
 	cases := []struct {
 		name string
@@ -157,7 +142,6 @@ func TestLoadServerConfigFromEnv_InvalidValues(t *testing.T) {
 		{"bad bool", EnvLDAPAllowAnonymousBind, "not-a-bool"},
 		{"bad int", EnvDatabaseMaxConns, "not-a-number"},
 		{"bad duration", EnvRateLimitWindow, "not-a-duration"},
-		{"bad JSON clients", EnvOIDCClients, "not json"},
 		{"bad trust-gateway bool", EnvNetworkTrustDefaultGateway, "maybe"},
 	}
 	for _, tc := range cases {

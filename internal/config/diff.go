@@ -8,14 +8,16 @@ import (
 
 // SnapshotDiff summarizes what changed between two identity snapshots.
 type SnapshotDiff struct {
-	UsersAdded, UsersRemoved, UsersModified    []string
-	GroupsAdded, GroupsRemoved, GroupsModified []string
+	UsersAdded, UsersRemoved, UsersModified                   []string
+	GroupsAdded, GroupsRemoved, GroupsModified                []string
+	OIDCClientsAdded, OIDCClientsRemoved, OIDCClientsModified []string
 }
 
 // IsEmpty reports whether the diff represents no change at all.
 func (d SnapshotDiff) IsEmpty() bool {
 	return len(d.UsersAdded)+len(d.UsersRemoved)+len(d.UsersModified)+
-		len(d.GroupsAdded)+len(d.GroupsRemoved)+len(d.GroupsModified) == 0
+		len(d.GroupsAdded)+len(d.GroupsRemoved)+len(d.GroupsModified)+
+		len(d.OIDCClientsAdded)+len(d.OIDCClientsRemoved)+len(d.OIDCClientsModified) == 0
 }
 
 // DiffSnapshots computes the added/removed/modified users and groups between
@@ -59,12 +61,31 @@ func DiffSnapshots(old, updated *identity.Snapshot) SnapshotDiff {
 		}
 	}
 
+	for id, nc := range updated.OIDCClients {
+		oc, existed := old.OIDCClients[id]
+		if !existed {
+			d.OIDCClientsAdded = append(d.OIDCClientsAdded, id)
+			continue
+		}
+		if !oidcClientsEqual(oc, nc) {
+			d.OIDCClientsModified = append(d.OIDCClientsModified, id)
+		}
+	}
+	for id := range old.OIDCClients {
+		if _, stillExists := updated.OIDCClients[id]; !stillExists {
+			d.OIDCClientsRemoved = append(d.OIDCClientsRemoved, id)
+		}
+	}
+
 	sort.Strings(d.UsersAdded)
 	sort.Strings(d.UsersRemoved)
 	sort.Strings(d.UsersModified)
 	sort.Strings(d.GroupsAdded)
 	sort.Strings(d.GroupsRemoved)
 	sort.Strings(d.GroupsModified)
+	sort.Strings(d.OIDCClientsAdded)
+	sort.Strings(d.OIDCClientsRemoved)
+	sort.Strings(d.OIDCClientsModified)
 	return d
 }
 
@@ -81,6 +102,13 @@ func groupsEqual(a, b identity.Group) bool {
 		return false
 	}
 	return stringSlicesEqualAsSets(a.MemberOfGroups, b.MemberOfGroups)
+}
+
+func oidcClientsEqual(a, b identity.OIDCClient) bool {
+	if a.Public != b.Public || a.ClientSecret != b.ClientSecret {
+		return false
+	}
+	return stringSlicesEqualAsSets(a.RedirectURIs, b.RedirectURIs)
 }
 
 func stringSlicesEqualAsSets(a, b []string) bool {

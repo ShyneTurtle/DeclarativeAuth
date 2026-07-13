@@ -61,9 +61,9 @@ data:
   # DECLARATIVEAUTH_OIDC_TLS_CERT_FILE: ""
   # DECLARATIVEAUTH_OIDC_TLS_KEY_FILE: ""
 
-  # DEPRECATED: will be removed in a future release. Empty/unset means no
-  # statically declared OIDC clients.
-  # DECLARATIVEAUTH_OIDC_CLIENTS: "[]"
+  # OIDC clients are declared in oidc-clients.yaml (see
+  # configmap-identity.yaml), not here -- hot-reloaded the same way as
+  # users.yaml/groups.yaml.
 
   # ---- SMTP --------------------------------------------------------------------
   DECLARATIVEAUTH_SMTP_HOST: smtp.example.com

@@ -53,6 +53,7 @@ func (w *Watcher) LoadInitial() error {
 			"component", "config",
 			"users", len(snap.Users),
 			"groups", len(snap.Groups),
+			"oidc_clients", len(snap.OIDCClients),
 		)
 	}
 	return nil
@@ -143,6 +144,9 @@ func (w *Watcher) reload() {
 			"groups_added", diff.GroupsAdded,
 			"groups_removed", diff.GroupsRemoved,
 			"groups_modified", diff.GroupsModified,
+			"oidc_clients_added", diff.OIDCClientsAdded,
+			"oidc_clients_removed", diff.OIDCClientsRemoved,
+			"oidc_clients_modified", diff.OIDCClientsModified,
 		)
 	}
 	if w.OnReload != nil {
@@ -152,11 +156,14 @@ func (w *Watcher) reload() {
 
 func (d SnapshotDiff) counts() map[string]int {
 	return map[string]int{
-		"user_added":     len(d.UsersAdded),
-		"user_removed":   len(d.UsersRemoved),
-		"user_modified":  len(d.UsersModified),
-		"group_added":    len(d.GroupsAdded),
-		"group_removed":  len(d.GroupsRemoved),
-		"group_modified": len(d.GroupsModified),
+		"user_added":           len(d.UsersAdded),
+		"user_removed":         len(d.UsersRemoved),
+		"user_modified":        len(d.UsersModified),
+		"group_added":          len(d.GroupsAdded),
+		"group_removed":        len(d.GroupsRemoved),
+		"group_modified":       len(d.GroupsModified),
+		"oidc_client_added":    len(d.OIDCClientsAdded),
+		"oidc_client_removed":  len(d.OIDCClientsRemoved),
+		"oidc_client_modified": len(d.OIDCClientsModified),
 	}
 }

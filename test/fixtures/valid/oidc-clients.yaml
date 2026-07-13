@@ -1,0 +1,7 @@
+apiVersion: declarativeauth.io/v1
+kind: OIDCClientList
+clients:
+  - clientID: example-client
+    redirectURIs:
+      - http://localhost:9000/callback
+    public: true

@@ -107,12 +107,14 @@ docker compose -f deploy/compose/docker-compose.yaml up -d
 
 Two separate kinds of input, deliberately different in shape:
 
-1. **Identity** (`users.yaml` + `groups.yaml`) -- *who exists*, declarative
-   YAML, hot-reloaded. See [`examples/identity/`](examples/identity/):
-   every field is commented inline, and the example groups form a
-   deliberate "diamond" to demonstrate inheritance. Point the server at
-   your own copy via `DECLARATIVEAUTH_IDENTITY_PATH`; edits are
-   hot-reloaded, no restart needed.
+1. **Identity** (`users.yaml` + `groups.yaml`, and optionally
+   `oidc-clients.yaml`), declarative YAML, hot-reloaded. See 
+   [`examples/identity/`](examples/identity/), there's no dynamic OIDC
+   client registration `oidc-clients.yaml` is the only way to register one
+   an absent file just means no clients are registered, and the discovery
+   documents at `/.well-known/openid-configuration` and 
+   `/.well-known/jwks.json` are always served regardless, so client 
+   libraries can still auto-discover this issuer.
 2. **Server config** -- *how the process runs*: listeners, database DSN,
    SMTP, rate limiting, TLS, admin UI. Entirely `DECLARATIVEAUTH_*`
    environment variables, set once at process start. See
@@ -138,7 +140,7 @@ identity example, mounted as a volume so it can hot-reload.
 ```
 declarativeauth serve             # run the server (default long-running process)
 declarativeauth migrate           # apply Postgres migrations and exit
-declarativeauth validate-config   # validate users.yaml/groups.yaml without starting anything
+declarativeauth validate-config   # validate users.yaml/groups.yaml/oidc-clients.yaml without starting anything
 declarativeauth admin set-password    # seed/reset a password directly (bootstrap/testing)
 ```
 
@@ -147,7 +149,7 @@ running server uses (so results never diverge), and prints a summary:
 
 ```
 $ declarativeauth validate-config -identity-path examples/identity
-config valid: 5 groups, 3 users (1 disabled)
+config valid: 5 groups, 3 users (1 disabled), 2 oidc clients
 ```
 
 Use it in CI or a pre-commit hook against your real identity files, before
@@ -164,7 +166,7 @@ password" code path.
 ```
 cmd/declarativeauth   entrypoint + CLI subcommands
 internal/             application code (see "Architecture" below)
-examples/identity/    a worked users.yaml/groups.yaml example (diamond group inheritance)
+examples/identity/    a worked users.yaml/groups.yaml/oidc-clients.yaml example (diamond group inheritance)
 deploy/
   docker/             production Dockerfile
   compose/            homelab-ready single-instance docker-compose stack (persistent, TLS on)

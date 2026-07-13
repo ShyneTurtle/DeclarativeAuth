@@ -14,7 +14,7 @@ func runValidateConfig(args []string) error {
 	if defaultPath == "" {
 		defaultPath = "/etc/declarativeauth/identity"
 	}
-	identityPath := fs.String("identity-path", defaultPath, "directory containing users.yaml/groups.yaml (defaults to $"+config.EnvIdentityPath+")")
+	identityPath := fs.String("identity-path", defaultPath, "directory containing users.yaml/groups.yaml/oidc-clients.yaml (defaults to $"+config.EnvIdentityPath+")")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -30,6 +30,6 @@ func runValidateConfig(args []string) error {
 			disabled++
 		}
 	}
-	fmt.Printf("config valid: %d groups, %d users (%d disabled)\n", len(snap.Groups), len(snap.Users), disabled)
+	fmt.Printf("config valid: %d groups, %d users (%d disabled), %d oidc clients\n", len(snap.Groups), len(snap.Users), disabled, len(snap.OIDCClients))
 	return nil
 }

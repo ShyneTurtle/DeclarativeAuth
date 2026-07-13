@@ -63,10 +63,13 @@ func (h *Handlers) NewMux() *http.ServeMux {
 		mux.HandleFunc("/admin/config/validate", h.gate(h.handleConfigValidate))
 		mux.HandleFunc("/admin/config/users", h.gate(h.handleConfigEditorUsers))
 		mux.HandleFunc("/admin/config/groups", h.gate(h.handleConfigEditorGroups))
+		mux.HandleFunc("/admin/config/oidc-clients", h.gate(h.handleConfigEditorOIDCClients))
 		mux.HandleFunc("/admin/config/users/save", h.gate(h.handleConfigSaveUsers))
 		mux.HandleFunc("/admin/config/groups/save", h.gate(h.handleConfigSaveGroups))
+		mux.HandleFunc("/admin/config/oidc-clients/save", h.gate(h.handleConfigSaveOIDCClients))
 		mux.HandleFunc("/admin/config/users/download", h.gate(h.handleConfigDownloadUsers))
 		mux.HandleFunc("/admin/config/groups/download", h.gate(h.handleConfigDownloadGroups))
+		mux.HandleFunc("/admin/config/oidc-clients/download", h.gate(h.handleConfigDownloadOIDCClients))
 	}
 	return mux
 }

@@ -35,9 +35,6 @@ func startFullServer(t *testing.T) (issuer string, holder *config.SnapshotHolder
 		OIDC: config.OIDCConfig{
 			Issuer:     "http://" + oidcAddr,
 			ListenAddr: oidcAddr,
-			Clients: []config.OIDCClient{
-				{ClientID: "example-client", RedirectURIs: []string{"http://localhost:9000/callback"}, Public: true},
-			},
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 5, BackoffBase: config.Duration(time.Second),

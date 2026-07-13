@@ -5,7 +5,7 @@
     <li><a href="/admin/smtp-test">Send a test email to verify SMTP configuration</a></li>
     <li><a href="/admin/graph">Visualize the group inheritance graph</a></li>
     {{if .ConfigEditorEnabled}}
-    <li><a href="/admin/config/users">Edit declarative users.yaml / groups.yaml</a></li>
+    <li><a href="/admin/config/users">Edit declarative users.yaml / groups.yaml / oidc-clients.yaml</a></li>
     {{else}}
     <li>Config editor is disabled (single-instance deployments only) &mdash; edit the YAML source directly.</li>
     {{end}}
