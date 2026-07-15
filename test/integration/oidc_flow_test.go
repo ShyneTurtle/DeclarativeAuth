@@ -158,6 +158,7 @@ func TestOIDC_FullAuthorizationCodeFlowWithPKCE(t *testing.T) {
 	tokenResp, err := client.PostForm(issuer+"/token", url.Values{
 		"grant_type": {"authorization_code"}, "code": {code},
 		"client_id": {"example-client"}, "code_verifier": {verifier},
+		"redirect_uri": {"http://localhost:9000/callback"},
 	})
 	if err != nil {
 		t.Fatalf("post token: %v", err)
@@ -246,14 +247,155 @@ func TestOIDC_PKCE_WrongVerifierRejected(t *testing.T) {
 	tokenResp, err := client.PostForm(issuer+"/token", url.Values{
 		"grant_type": {"authorization_code"}, "code": {code},
 		"client_id": {"example-client"}, "code_verifier": {"wrong-verifier"},
+		"redirect_uri": {"http://localhost:9000/callback"},
 	})
 	if err != nil {
 		t.Fatalf("post token: %v", err)
 	}
 	defer tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for wrong PKCE verifier, got %d", tokenResp.StatusCode)
+	}
 	var body map[string]any
 	_ = json.NewDecoder(tokenResp.Body).Decode(&body)
 	if body["error"] != "invalid_grant" {
 		t.Fatalf("expected invalid_grant for wrong PKCE verifier, got %v", body)
+	}
+}
+
+// TestOIDC_TokenErrorsUseNonSuccessStatusCodes proves the token endpoint no
+// longer returns HTTP 200 for error bodies -- a strict OAuth2 client (e.g.
+// Vaultwarden's openidconnect-rs) branches on status code to decide whether
+// to parse the body as a TokenResponse or an ErrorResponse; a 200 status on
+// an error body was being misread as a malformed success and surfaced as a
+// confusing "missing field `access_token`" error instead of invalid_client.
+func TestOIDC_TokenErrorsUseNonSuccessStatusCodes(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	client := &http.Client{}
+
+	t.Run("unsupported_grant_type", func(t *testing.T) {
+		resp, err := client.PostForm(issuer+"/token", url.Values{"grant_type": {"client_credentials"}})
+		if err != nil {
+			t.Fatalf("post token: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("unknown client_id", func(t *testing.T) {
+		resp, err := client.PostForm(issuer+"/token", url.Values{
+			"grant_type": {"authorization_code"}, "code": {"whatever"}, "client_id": {"no-such-client"},
+		})
+		if err != nil {
+			t.Fatalf("post token: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", resp.StatusCode)
+		}
+		if got := resp.Header.Get("WWW-Authenticate"); got == "" {
+			t.Error("expected a WWW-Authenticate challenge on invalid_client")
+		}
+	})
+
+	t.Run("wrong client_secret", func(t *testing.T) {
+		resp, err := client.PostForm(issuer+"/token", url.Values{
+			"grant_type": {"authorization_code"}, "code": {"whatever"},
+			"client_id": {"confidential-client"}, "client_secret": {"wrong"},
+		})
+		if err != nil {
+			t.Fatalf("post token: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusUnauthorized {
+			t.Fatalf("expected 401, got %d", resp.StatusCode)
+		}
+	})
+
+	t.Run("invalid_grant for unknown code", func(t *testing.T) {
+		resp, err := client.PostForm(issuer+"/token", url.Values{
+			"grant_type": {"authorization_code"}, "code": {"no-such-code"},
+			"client_id": {"confidential-client"}, "client_secret": {"s3cret-value"},
+			"redirect_uri": {"http://localhost:9001/callback"},
+		})
+		if err != nil {
+			t.Fatalf("post token: %v", err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("expected 400, got %d", resp.StatusCode)
+		}
+	})
+}
+
+// TestOIDC_TokenEndpointAcceptsHTTPBasicClientAuth proves client_secret_basic
+// (RFC 6749 §2.3.1) now works, not just client_secret_post -- this is what
+// Vaultwarden's openidconnect-rs client uses by default for confidential
+// clients, and the server previously only checked the POST body.
+func TestOIDC_TokenEndpointAcceptsHTTPBasicClientAuth(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{
+		Jar:           jar,
+		CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse },
+	}
+
+	authorizeURL := issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"confidential-client"},
+		"redirect_uri": {"http://localhost:9001/callback"}, "scope": {"openid"}, "state": {"s"},
+	}.Encode()
+
+	resp, _ := client.Get(authorizeURL)
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, _ = client.Get(issuer + loc)
+	resp.Body.Close()
+	loginURL, _ := url.Parse(issuer + loc)
+	var csrfToken string
+	for _, c := range jar.Cookies(loginURL) {
+		if c.Name == "da_csrf" {
+			csrfToken = c.Value
+		}
+	}
+	returnTo := loginURL.Query().Get("return_to")
+	resp, _ = client.PostForm(issuer+"/login", url.Values{
+		"username": {"jsmith"}, "password": {"Secret123!"}, "csrf_token": {csrfToken}, "return_to": {returnTo},
+	})
+	loc = resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, _ = client.Get(issuer + loc)
+	finalLoc := resp.Header.Get("Location")
+	resp.Body.Close()
+	cbURL, _ := url.Parse(finalLoc)
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("expected an auth code, got redirect %q", finalLoc)
+	}
+
+	form := url.Values{
+		"grant_type": {"authorization_code"}, "code": {code},
+		"redirect_uri": {"http://localhost:9001/callback"},
+	}
+	req, _ := http.NewRequest(http.MethodPost, issuer+"/token", strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.SetBasicAuth("confidential-client", "s3cret-value")
+
+	tokenResp, err := (&http.Client{}).Do(req)
+	if err != nil {
+		t.Fatalf("post token: %v", err)
+	}
+	defer tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 with HTTP Basic client auth, got %d", tokenResp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(tokenResp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	if body["access_token"] == "" || body["access_token"] == nil {
+		t.Fatalf("expected access_token, got %v", body)
 	}
 }

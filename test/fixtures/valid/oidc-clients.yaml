@@ -5,3 +5,8 @@ clients:
     redirectURIs:
       - http://localhost:9000/callback
     public: true
+  - clientID: confidential-client
+    redirectURIs:
+      - http://localhost:9001/callback
+    public: false
+    clientSecret: s3cret-value

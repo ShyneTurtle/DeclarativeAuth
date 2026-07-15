@@ -60,7 +60,7 @@ func (p *Provider) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"ES256"},
 		"scopes_supported":                      []string{"openid", "profile", "email", "groups"},
-		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post"},
+		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
 		"code_challenge_methods_supported":      []string{"S256"},
 		"claims_supported":                      []string{"sub", "email", "name", "preferred_username", "groups"},
 	})
@@ -142,34 +142,54 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.FormValue("grant_type") != "authorization_code" {
-		writeJSON(w, map[string]any{"error": "unsupported_grant_type"})
+		writeTokenError(w, http.StatusBadRequest, "unsupported_grant_type")
 		return
 	}
 
 	code := r.FormValue("code")
 	verifier := r.FormValue("code_verifier")
 	clientID := r.FormValue("client_id")
+	clientSecret := r.FormValue("client_secret")
+	redirectURI := r.FormValue("redirect_uri")
+
+	// RFC 6749 §2.3.1: client_secret_basic (HTTP Basic auth) takes
+	// precedence over client_secret_post (form body) when both are
+	// present; a Basic-auth client_id must also match the form's.
+	if basicID, basicSecret, ok := r.BasicAuth(); ok {
+		if basicID != clientID && clientID != "" {
+			writeTokenClientAuthError(w, "invalid_client")
+			return
+		}
+		clientID = basicID
+		clientSecret = basicSecret
+	}
 
 	client, ok := p.Snapshot().OIDCClients[clientID]
 	if !ok {
-		writeJSON(w, map[string]any{"error": "invalid_client"})
+		writeTokenClientAuthError(w, "invalid_client")
 		return
 	}
-	if !client.Public && subtle.ConstantTimeCompare([]byte(r.FormValue("client_secret")), []byte(client.ClientSecret)) != 1 {
-		writeJSON(w, map[string]any{"error": "invalid_client"})
+	if !client.Public && subtle.ConstantTimeCompare([]byte(clientSecret), []byte(client.ClientSecret)) != 1 {
+		writeTokenClientAuthError(w, "invalid_client")
 		return
 	}
 
 	ac := p.Codes.Redeem(code)
 	if ac == nil || ac.ClientID != clientID {
-		writeJSON(w, map[string]any{"error": "invalid_grant"})
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	// RFC 6749 §4.1.3: since /authorize always requires a redirect_uri
+	// (see RedirectURIAllowed), the token request's must match it exactly.
+	if redirectURI != ac.RedirectURI {
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
 	if ac.CodeChallenge != "" {
 		sum := sha256.Sum256([]byte(verifier))
 		computed := base64.RawURLEncoding.EncodeToString(sum[:])
 		if computed != ac.CodeChallenge {
-			writeJSON(w, map[string]any{"error": "invalid_grant", "error_description": "PKCE verification failed"})
+			writeJSONStatus(w, http.StatusBadRequest, map[string]any{"error": "invalid_grant", "error_description": "PKCE verification failed"})
 			return
 		}
 	}
@@ -212,6 +232,20 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// writeTokenError writes an RFC 6749 §5.2-shaped error body with the
+// required non-200 status code, so client libraries branch on status
+// rather than trying to parse the body as a successful token response.
+func writeTokenError(w http.ResponseWriter, status int, errCode string) {
+	writeJSONStatus(w, status, map[string]any{"error": errCode})
+}
+
+// writeTokenClientAuthError writes an invalid_client failure per RFC 6749
+// §5.2: 401 with a WWW-Authenticate challenge.
+func writeTokenClientAuthError(w http.ResponseWriter, errCode string) {
+	w.Header().Set("WWW-Authenticate", `Basic realm="oidc"`)
+	writeJSONStatus(w, http.StatusUnauthorized, map[string]any{"error": errCode})
+}
+
 func (p *Provider) sign(claims jwt.MapClaims) (string, error) {
 	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
 	token.Header["kid"] = p.Keys.Kid
@@ -222,7 +256,7 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
-		w.WriteHeader(http.StatusUnauthorized)
+		unauthorizedUserinfo(w, "invalid_token")
 		return
 	}
 	raw := authz[len(prefix):]
@@ -231,7 +265,7 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return &p.Keys.PrivateKey.PublicKey, nil
 	}, jwt.WithValidMethods([]string{"ES256"}))
 	if err != nil || !token.Valid {
-		w.WriteHeader(http.StatusUnauthorized)
+		unauthorizedUserinfo(w, "invalid_token")
 		return
 	}
 	claims, _ := token.Claims.(jwt.MapClaims)
@@ -241,7 +275,19 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, Claims(snap, sub))
 }
 
+// unauthorizedUserinfo rejects a bearer token per RFC 6750 §3, which
+// requires a WWW-Authenticate challenge on 401 responses.
+func unauthorizedUserinfo(w http.ResponseWriter, errCode string) {
+	w.Header().Set("WWW-Authenticate", `Bearer error="`+errCode+`"`)
+	w.WriteHeader(http.StatusUnauthorized)
+}
+
 func writeJSON(w http.ResponseWriter, v any) {
+	writeJSONStatus(w, http.StatusOK, v)
+}
+
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
