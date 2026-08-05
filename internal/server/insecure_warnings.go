@@ -20,8 +20,8 @@ func warnInsecureConfig(cfg *config.ServerConfig, logger *slog.Logger) {
 		logger.Warn(config.EnvOIDCListenAddr+" is set: web login, password reset, and admin traffic (including passwords) sent to this plaintext listener will be readable on the wire unless a TLS-terminating reverse proxy sits in front of it",
 			"component", "startup", "listener", "oidc")
 	}
-	if cfg.LDAP.ListenAddr != "" {
-		logger.Warn(config.EnvLDAPListenAddr+" is set: LDAP bind credentials sent to this plaintext listener will be readable on the wire unless a TLS-terminating reverse proxy/stunnel sits in front of it",
+	if !cfg.LDAP.RequireTLS {
+		logger.Warn(config.EnvLDAPRequireTLS+" is false: LDAP bind credentials and search results may be sent unencrypted, since the plaintext listener no longer requires StartTLS before allowing Bind/Search",
 			"component", "startup", "listener", "ldap")
 	}
 	if cfg.LDAP.AllowAnonymousBind {

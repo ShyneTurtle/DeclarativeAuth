@@ -179,6 +179,7 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 		Groups:            groups,
 		OIDCClients:       oidcClients,
 		FlattenedMemberOf: flattened,
+		FlattenedMembers:  identity.ResolveFlattenedMembers(flattened),
 		LoadedAt:          time.Now(),
 		SourceHash:        hashBytes(rawBytes),
 	}, nil

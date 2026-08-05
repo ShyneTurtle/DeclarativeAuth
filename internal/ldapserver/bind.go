@@ -13,9 +13,14 @@ import (
 
 // handleBind processes a BindRequest (simple bind only). Returns the
 // authenticated username and true on success.
-func (h *Handler) handleBind(w io.Writer, sourceIP string, messageID int64, op *ber.Packet) (string, bool) {
+func (h *Handler) handleBind(w io.Writer, isTLS bool, sourceIP string, messageID int64, op *ber.Packet) (string, bool) {
 	if len(op.Children) < 3 {
 		writeResult(w, messageID, ldap.ApplicationBindResponse, ldap.LDAPResultProtocolError, "", "malformed bind request")
+		return "", false
+	}
+	if h.Config.RequireTLS && !isTLS {
+		writeResult(w, messageID, ldap.ApplicationBindResponse, ldap.LDAPResultConfidentialityRequired, "", "TLS required: use the secure listener or StartTLS")
+		h.audit("", false, sourceIP, "tls_required")
 		return "", false
 	}
 

@@ -247,26 +247,30 @@ is a supported, ordinary configuration.
   renewed cert. If no cert/key is configured at all while the secure
   address is set, an ephemeral self-signed certificate is generated instead
   (a warning is logged; don't rely on this outside local dev).
-- **Reverse-proxy terminated**: only set `..._LISTEN_ADDR` (leave the
-  `..._SECURE_LISTEN_ADDR` unset) and put a TLS-terminating proxy/load
-  balancer in front. Its address needs to be trusted for `X-Forwarded-For` /
-  `X-Forwarded-Proto` headers to be honored (rate limiting, audit logs, and
-  detecting that the original request was HTTPS) -- by default
+- **StartTLS**: independent of the above, the LDAP listener
+  (`DECLARATIVEAUTH_LDAP_LISTEN_ADDR`) offers the StartTLS extended
+  operation (RFC 4511 §4.14), resolving a cert/key pair the same way the
+  secure listener does (self-signed fallback included).
+- **Reverse-proxy terminated**: set the `..._LISTEN_ADDR` bind address/port
+  (for LDAP, also allow unsecure plaintext connections with 
+  `DECLARATIVEAUTH_LDAP_REQUIRE_TLS=false`), and put a TLS-terminating
+  proxy/load balancer in front. Its address needs to be trusted for 
+  `X-Forwarded-For` / `X-Forwarded-Proto` headers to be honored (rate limiting,
+  audit logs, and detecting that the original request was HTTPS) -- by default
   DeclarativeAuth already trusts its own default gateway
   (`DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY`, true by default), which
   covers the common case of a reverse proxy on the Docker host or in a
   sidecar reaching the container through its bridge gateway. Add explicit
   CIDRs to `DECLARATIVEAUTH_NETWORK_TRUSTED_PROXIES` for anything beyond
-  that (e.g. a load balancer reachable on a different address), or set
-  `DECLARATIVEAUTH_NETWORK_TRUST_DEFAULT_GATEWAY=false` if nothing should be
-  trusted implicitly.
+  that (e.g. a load balancer reachable on a different address).
 
 Since "reverse-proxy terminated" is indistinguishable, from the
 configuration alone, from someone simply forgetting to set up TLS at all,
-the server logs an explicit `WARN` at startup whenever a listener's
-plaintext address is set (among other risky settings -- see
-"Insecure-configuration guards" below) so it's never silently the case.
-There's no way to suppress these short of actually fixing the setting;
+the server logs an explicit `WARN` at startup for OIDC/web whenever its
+plaintext address is set, and for LDAP whenever `DECLARATIVEAUTH_LDAP_REQUIRE_TLS`
+is set to `false`, among other risky settings, see "Insecure-configuration
+guards" below -- so it's never silently the case. There's no way to
+suppress these short of actually fixing the setting;
 they're informational, not
 fatal.
 

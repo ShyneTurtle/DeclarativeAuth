@@ -114,3 +114,39 @@ func TestResolveFlattenedMemberOf_DeepChainPerf(t *testing.T) {
 func groupName(i int) string {
 	return "g" + strconv.Itoa(i)
 }
+
+func TestResolveFlattenedMembers_DiamondDeduped(t *testing.T) {
+	groups := map[string]Group{
+		"engineering": {Name: "engineering"},
+		"backend":     {Name: "backend", MemberOfGroups: []string{"engineering"}},
+		"platform":    {Name: "platform", MemberOfGroups: []string{"engineering"}},
+		"oncall":      {Name: "oncall", MemberOfGroups: []string{"backend", "platform"}},
+	}
+	users := map[string]User{
+		"jsmith": {Username: "jsmith", MemberOfGroups: []string{"oncall"}},
+		"asmith": {Username: "asmith", MemberOfGroups: []string{"backend"}},
+	}
+	memberOf := ResolveFlattenedMemberOf(users, groups)
+	members := ResolveFlattenedMembers(memberOf)
+
+	want := []string{"asmith", "jsmith"}
+	if !reflect.DeepEqual(members["engineering"], want) {
+		t.Fatalf("engineering members: got %v, want %v", members["engineering"], want)
+	}
+	if !reflect.DeepEqual(members["backend"], want) {
+		t.Fatalf("backend members: got %v, want %v", members["backend"], want)
+	}
+	if !reflect.DeepEqual(members["oncall"], []string{"jsmith"}) {
+		t.Fatalf("oncall members: got %v, want [jsmith]", members["oncall"])
+	}
+	if !reflect.DeepEqual(members["platform"], []string{"jsmith"}) {
+		t.Fatalf("platform members: got %v, want [jsmith]", members["platform"])
+	}
+}
+
+func TestResolveFlattenedMembers_NoUsers(t *testing.T) {
+	members := ResolveFlattenedMembers(map[string][]string{})
+	if len(members) != 0 {
+		t.Fatalf("expected no members, got %v", members)
+	}
+}

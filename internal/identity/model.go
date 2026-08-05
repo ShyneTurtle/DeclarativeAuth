@@ -85,12 +85,18 @@ type OIDCClient struct {
 // config at a point in time. A new Snapshot is built on every successful
 // config load/reload and swapped in atomically.
 type Snapshot struct {
-	Users             map[string]User
-	Groups            map[string]Group
-	OIDCClients       map[string]OIDCClient
+	Users       map[string]User
+	Groups      map[string]Group
+	OIDCClients map[string]OIDCClient
+	// FlattenedMemberOf is, per user, every group they're transitively a
+	// member of -- the LDAP "memberOf" side.
 	FlattenedMemberOf map[string][]string
-	LoadedAt          time.Time
-	SourceHash        string
+	// FlattenedMembers is the inverse of FlattenedMemberOf: per group,
+	// every user transitively in it -- the LDAP "member" side (see
+	// ResolveFlattenedMembers).
+	FlattenedMembers map[string][]string
+	LoadedAt         time.Time
+	SourceHash       string
 }
 
 // IsMemberOf reports whether username is (transitively) a member of group.

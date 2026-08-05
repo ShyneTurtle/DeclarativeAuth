@@ -22,6 +22,9 @@ func TestLoadServerConfigFromEnv_Defaults(t *testing.T) {
 	if cfg.LDAP.ListenAddr != "" || cfg.LDAP.SecureListenAddr != "" || cfg.LDAP.BaseDN != "" {
 		t.Errorf("expected LDAP listeners and base DN unset by default: %+v", cfg.LDAP)
 	}
+	if !cfg.LDAP.RequireTLS {
+		t.Error("expected RequireTLS to default true (secure by default)")
+	}
 	if cfg.OIDC.ListenAddr != "" || cfg.OIDC.SecureListenAddr != "" {
 		t.Errorf("expected OIDC listeners unset by default: %+v", cfg.OIDC)
 	}
@@ -77,6 +80,7 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvDatabaseMaxConns, "25")
 	t.Setenv(EnvLDAPSecureListenAddr, "0.0.0.0:636")
 	t.Setenv(EnvLDAPAllowAnonymousBind, "true")
+	t.Setenv(EnvLDAPRequireTLS, "false")
 	t.Setenv(EnvOIDCIssuer, "https://auth.example.com")
 	t.Setenv(EnvNetworkTrustedProxies, "10.0.0.0/8, 192.168.1.0/24")
 	t.Setenv(EnvNetworkTrustDefaultGateway, "false")
@@ -102,8 +106,8 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	if cfg.Database.MaxConns != 25 {
 		t.Errorf("unexpected MaxConns: %d", cfg.Database.MaxConns)
 	}
-	if cfg.LDAP.SecureListenAddr != "0.0.0.0:636" || !cfg.LDAP.AllowAnonymousBind {
-		t.Errorf("expected LDAP secure listen addr/anonymous overrides to apply: %+v", cfg.LDAP)
+	if cfg.LDAP.SecureListenAddr != "0.0.0.0:636" || !cfg.LDAP.AllowAnonymousBind || cfg.LDAP.RequireTLS {
+		t.Errorf("expected LDAP secure listen addr/anonymous/requireTLS overrides to apply: %+v", cfg.LDAP)
 	}
 	if cfg.OIDC.Issuer != "https://auth.example.com" {
 		t.Errorf("unexpected OIDC issuer: %q", cfg.OIDC.Issuer)

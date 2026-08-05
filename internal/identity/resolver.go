@@ -152,3 +152,28 @@ func ResolveFlattenedMemberOf(users map[string]User, groups map[string]Group) ma
 	}
 	return result
 }
+
+// ResolveFlattenedMembers inverts a user -> flattened-groups map (as
+// returned by ResolveFlattenedMemberOf) into a group -> flattened-members
+// map: for every group, every user transitively in it, sorted. This is the
+// other half of group-inheritance flattening -- ResolveFlattenedMemberOf
+// answers "what groups is this user in" (rendered as a user's LDAP
+// memberOf), this answers "who is in this group" (rendered as a group's
+// LDAP member), and RFC 4519's groupOfNames requires the latter as a MUST
+// attribute, so a group entry needs it even though nothing else in this
+// codebase needs the reverse index.
+func ResolveFlattenedMembers(flattenedMemberOf map[string][]string) map[string][]string {
+	result := map[string][]string{}
+	usernames := make([]string, 0, len(flattenedMemberOf))
+	for username := range flattenedMemberOf {
+		usernames = append(usernames, username)
+	}
+	sort.Strings(usernames)
+
+	for _, username := range usernames {
+		for _, group := range flattenedMemberOf[username] {
+			result[group] = append(result[group], username)
+		}
+	}
+	return result
+}

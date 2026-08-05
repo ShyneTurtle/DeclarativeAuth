@@ -31,6 +31,10 @@ const (
 	EnvLDAPAllowAnonymousBind = "DECLARATIVEAUTH_LDAP_ALLOW_ANONYMOUS_BIND"
 	EnvLDAPTLSCertFile        = "DECLARATIVEAUTH_LDAP_TLS_CERT_FILE"
 	EnvLDAPTLSKeyFile         = "DECLARATIVEAUTH_LDAP_TLS_KEY_FILE"
+	// EnvLDAPRequireTLS defaults to true (secure by default): Bind and
+	// Search are rejected over a non-TLS connection, without disabling the
+	// plaintext listener itself -- StartTLS still upgrades it in place.
+	EnvLDAPRequireTLS = "DECLARATIVEAUTH_LDAP_REQUIRE_TLS"
 
 	// EnvOIDCListenAddr and EnvOIDCSecureListenAddr are the same independent
 	// plaintext/secure split as the LDAP pair above.
@@ -167,6 +171,9 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 		return nil, err
 	}
 	if cfg.LDAP.AllowAnonymousBind, err = getenvBool(EnvLDAPAllowAnonymousBind, false); err != nil {
+		return nil, err
+	}
+	if cfg.LDAP.RequireTLS, err = getenvBool(EnvLDAPRequireTLS, true); err != nil {
 		return nil, err
 	}
 	if cfg.SMTP.Port, err = getenvInt(EnvSMTPPort, 0); err != nil {

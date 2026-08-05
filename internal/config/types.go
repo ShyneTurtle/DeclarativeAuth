@@ -140,6 +140,10 @@ type LDAPConfig struct {
 	BaseDN             string
 	TLS                TLSListenerConfig
 	AllowAnonymousBind bool
+	// RequireTLS rejects Bind/Search over a non-TLS connection (RootDSE
+	// excepted) without touching whether the plaintext listener itself
+	// runs -- see EnvLDAPRequireTLS.
+	RequireTLS bool
 }
 
 // OIDCConfig configures the OIDC/web listener(s), with the same independent

@@ -109,6 +109,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Config: ldapserver.Config{
 				BaseDN:             cfg.LDAP.BaseDN,
 				AllowAnonymousBind: cfg.LDAP.AllowAnonymousBind,
+				RequireTLS:         cfg.LDAP.RequireTLS,
 			},
 			Snapshot:      holder.Get,
 			Authenticator: authenticator,
@@ -137,17 +138,32 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				}
 			},
 		}
-		ldapSrv := &ldapserver.Server{Handler: ldapHandler}
-
+		// The plaintext and secure LDAP listeners get separate *Server
+		// values (sharing the same Handler) because they need different
+		// TLSConfig behavior: the plaintext listener's TLSConfig is what it
+		// offers to a StartTLS request mid-connection, while the secure
+		// listener is already TLS-terminated at accept time (via
+		// listenLDAP below) and must never additionally offer StartTLS.
 		if cfg.LDAP.ListenAddr != "" {
+			// Resolved the same way as any other secure listener's
+			// cert/key (listener-specific override, then the shared
+			// top-level pair, then a self-signed dev fallback) so
+			// StartTLS "just works" on the plaintext port with no extra
+			// configuration -- it's opt-in per connection, so plaintext
+			// clients that never send StartTLS are entirely unaffected.
+			startTLSConfig, err := buildTLSConfig(gctx, cfg.TLS, cfg.LDAP.TLS, logger)
+			if err != nil {
+				return fmt.Errorf("ldap StartTLS: %w", err)
+			}
 			ln, err := listenLDAP(cfg.LDAP.ListenAddr, nil)
 			if err != nil {
 				return fmt.Errorf("listening on ldap addr: %w", err)
 			}
+			plaintextSrv := &ldapserver.Server{Handler: ldapHandler, TLSConfig: startTLSConfig}
 			addr := cfg.LDAP.ListenAddr
 			g.Go(func() error {
-				logger.Info("ldap listener started", "component", "ldapserver", "addr", addr, "tls", false)
-				return ldapSrv.Serve(gctx, ln)
+				logger.Info("ldap listener started", "component", "ldapserver", "addr", addr, "tls", false, "starttls", true)
+				return plaintextSrv.Serve(gctx, ln)
 			})
 		}
 		if cfg.LDAP.SecureListenAddr != "" {
@@ -159,10 +175,11 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			if err != nil {
 				return fmt.Errorf("listening on ldap secure addr: %w", err)
 			}
+			secureSrv := &ldapserver.Server{Handler: ldapHandler}
 			addr := cfg.LDAP.SecureListenAddr
 			g.Go(func() error {
 				logger.Info("ldap listener started", "component", "ldapserver", "addr", addr, "tls", true)
-				return ldapSrv.Serve(gctx, ln)
+				return secureSrv.Serve(gctx, ln)
 			})
 		}
 	}

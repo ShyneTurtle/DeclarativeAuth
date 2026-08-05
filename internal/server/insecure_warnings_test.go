@@ -19,7 +19,7 @@ func warningsFor(cfg *config.ServerConfig) string {
 func TestWarnInsecureConfig_FullyLockedDown(t *testing.T) {
 	cfg := &config.ServerConfig{
 		OIDC:           config.OIDCConfig{SecureListenAddr: "0.0.0.0:8443"},
-		LDAP:           config.LDAPConfig{SecureListenAddr: "0.0.0.0:636"},
+		LDAP:           config.LDAPConfig{SecureListenAddr: "0.0.0.0:636", RequireTLS: true},
 		PasswordPolicy: config.PasswordPolicyConfig{MinLength: 8, MinStrength: 2},
 	}
 	if out := warningsFor(cfg); out != "" {
@@ -27,24 +27,24 @@ func TestWarnInsecureConfig_FullyLockedDown(t *testing.T) {
 	}
 }
 
-func TestWarnInsecureConfig_PlaintextListeners(t *testing.T) {
+func TestWarnInsecureConfig_PlaintextListenersAndUnrequiredTLS(t *testing.T) {
 	cfg := &config.ServerConfig{
 		OIDC: config.OIDCConfig{ListenAddr: "0.0.0.0:8080"},
-		LDAP: config.LDAPConfig{ListenAddr: "0.0.0.0:389"},
+		LDAP: config.LDAPConfig{ListenAddr: "0.0.0.0:389", RequireTLS: false},
 	}
 	out := warningsFor(cfg)
 	if !strings.Contains(out, config.EnvOIDCListenAddr+" is set") {
 		t.Error("expected a warning about " + config.EnvOIDCListenAddr)
 	}
-	if !strings.Contains(out, config.EnvLDAPListenAddr+" is set") {
-		t.Error("expected a warning about " + config.EnvLDAPListenAddr)
+	if !strings.Contains(out, config.EnvLDAPRequireTLS+" is false") {
+		t.Error("expected a warning about " + config.EnvLDAPRequireTLS)
 	}
 }
 
 func TestWarnInsecureConfig_AnonymousBind(t *testing.T) {
 	cfg := &config.ServerConfig{
 		OIDC: config.OIDCConfig{SecureListenAddr: "0.0.0.0:8443"},
-		LDAP: config.LDAPConfig{SecureListenAddr: "0.0.0.0:636", AllowAnonymousBind: true},
+		LDAP: config.LDAPConfig{SecureListenAddr: "0.0.0.0:636", AllowAnonymousBind: true, RequireTLS: true},
 	}
 	if out := warningsFor(cfg); !strings.Contains(out, config.EnvLDAPAllowAnonymousBind+" is true") {
 		t.Errorf("expected a warning about allowAnonymousBind, got:\n%s", out)
@@ -54,7 +54,7 @@ func TestWarnInsecureConfig_AnonymousBind(t *testing.T) {
 func TestWarnInsecureConfig_WeakPasswordPolicy(t *testing.T) {
 	cfg := &config.ServerConfig{
 		OIDC:           config.OIDCConfig{SecureListenAddr: "0.0.0.0:8443"},
-		LDAP:           config.LDAPConfig{SecureListenAddr: "0.0.0.0:636"},
+		LDAP:           config.LDAPConfig{SecureListenAddr: "0.0.0.0:636", RequireTLS: true},
 		PasswordPolicy: config.PasswordPolicyConfig{MinLength: 4, MinStrength: 1},
 	}
 	out := warningsFor(cfg)
