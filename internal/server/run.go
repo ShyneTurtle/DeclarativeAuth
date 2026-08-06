@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 	// login/reset attempt -- Authenticate and handleResetSubmit both
 	// already treat a nil RateLimiter as "unthrottled". When only one
 	// dimension is enabled, RateLimiter itself skips the disabled one.
-	var loginRateLimiter, resetRateLimiter *auth.RateLimiter
+	var loginRateLimiter, resetRateLimiter, oidcTokenRateLimiter *auth.RateLimiter
 	if cfg.RateLimit.Threshold > 0 || cfg.RateLimit.IPThreshold > 0 {
 		lockouts := &store.LockoutStore{Pool: pool}
 		userParams := auth.ParamsFromConfig(
@@ -81,6 +81,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		// password-reset spam and login brute-forcing don't share a budget
 		// -- see auth.RateLimiter.KeyPrefix and web.ResetHandlers.RateLimiter.
 		resetRateLimiter = &auth.RateLimiter{Lockouts: lockouts, Params: userParams, IPParams: ipParams, KeyPrefix: "reset:"}
+		// Throttles /token (client_id + source IP), namespaced the same way
+		// -- see oidcserver.Provider.RateLimiter.
+		oidcTokenRateLimiter = &auth.RateLimiter{Lockouts: lockouts, Params: userParams, IPParams: ipParams, KeyPrefix: "oidc-token:"}
 	}
 
 	sessionStore := &store.SessionStore{Pool: pool}
@@ -196,7 +199,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		}
 		oidcCodes := &store.OIDCCodeStore{Pool: pool}
 		oidcRevocations := &store.RevokedTokenStore{Pool: pool}
-		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, oidcRevocations, holder.Get, sessions.CurrentUser, logger)
+		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, oidcRevocations, holder.Get, sessions.CurrentUser, logger, oidcTokenRateLimiter, trustedProxies)
 		g.Go(func() error {
 			return maintainOIDCState(gctx, oidcKeys, oidcCodes, oidcRevocations, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
 		})

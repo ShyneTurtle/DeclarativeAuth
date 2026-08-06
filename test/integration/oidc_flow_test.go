@@ -920,3 +920,168 @@ func TestOIDC_Revoke_RequiresClientAuth(t *testing.T) {
 		t.Fatalf("expected 401 for an unknown client_id, got %d", resp.StatusCode)
 	}
 }
+
+// TestOIDC_TokenEndpointRateLimited proves repeated /token failures for the
+// same client_id eventually trip the persisted rate limiter (startFullServer
+// enables it with Threshold=5), returning 429 slow_down instead of letting
+// an attacker keep guessing refresh tokens/client secrets unthrottled.
+func TestOIDC_TokenEndpointRateLimited(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	for i := 0; i < 6; i++ {
+		resp, err := http.PostForm(issuer+"/token", url.Values{
+			"grant_type": {"refresh_token"}, "refresh_token": {"bogus.bogus"}, "client_id": {"example-client"},
+		})
+		if err != nil {
+			t.Fatalf("post token (attempt %d): %v", i, err)
+		}
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("attempt %d: expected 400 invalid_grant before lockout, got %d", i, resp.StatusCode)
+		}
+	}
+
+	resp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {"bogus.bogus"}, "client_id": {"example-client"},
+	})
+	if err != nil {
+		t.Fatalf("post token (locked): %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 once the rate limit trips, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["error"] != "slow_down" {
+		t.Fatalf("expected slow_down, got %v", body)
+	}
+}
+
+func TestOIDC_Authorize_MissingRedirectURIRejectedInline(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	resp, err := http.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"}, "scope": {"openid"}, "state": {"s"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a missing redirect_uri (never a redirect, since it's unverified), got %d", resp.StatusCode)
+	}
+}
+
+func TestOIDC_Authorize_ErrorRedirectsIncludeDescriptionAndIssuer(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"token"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "state": {"s"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse redirect location %q: %v", loc, err)
+	}
+	if u.Query().Get("error") != "unsupported_response_type" {
+		t.Fatalf("expected error=unsupported_response_type, got %v", u.Query())
+	}
+	if u.Query().Get("error_description") == "" {
+		t.Error("expected a non-empty error_description")
+	}
+	if u.Query().Get("iss") != issuer {
+		t.Errorf("expected iss=%q, got %q", issuer, u.Query().Get("iss"))
+	}
+	if u.Query().Get("state") != "s" {
+		t.Errorf("expected state to be echoed back, got %q", u.Query().Get("state"))
+	}
+}
+
+func TestOIDC_Userinfo_InvalidTokenReturnsJSONError(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	req, _ := http.NewRequest(http.MethodGet, issuer+"/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer not-a-real-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("userinfo: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", resp.StatusCode)
+	}
+	if resp.Header.Get("WWW-Authenticate") == "" {
+		t.Error("expected a WWW-Authenticate challenge")
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["error"] != "invalid_token" || body["error_description"] == "" {
+		t.Fatalf("expected a JSON error body with a description, got %v", body)
+	}
+}
+
+func TestOIDC_Token_StrayCodeVerifierRejected(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	// confidential-client doesn't require (and here, doesn't use) PKCE.
+	authorizeURL := issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"confidential-client"},
+		"redirect_uri": {"http://localhost:9001/callback"}, "scope": {"openid"}, "state": {"s"},
+	}.Encode()
+
+	resp, _ := client.Get(authorizeURL)
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, _ = client.Get(issuer + loc)
+	resp.Body.Close()
+	loginURL, _ := url.Parse(issuer + loc)
+	var csrfToken string
+	for _, c := range jar.Cookies(loginURL) {
+		if c.Name == "da_csrf" {
+			csrfToken = c.Value
+		}
+	}
+	returnTo := loginURL.Query().Get("return_to")
+	resp, _ = client.PostForm(issuer+"/login", url.Values{
+		"username": {"jsmith"}, "password": {"Secret123!"}, "csrf_token": {csrfToken}, "return_to": {returnTo},
+	})
+	loc = resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, _ = client.Get(issuer + loc)
+	finalLoc := resp.Header.Get("Location")
+	resp.Body.Close()
+	cbURL, _ := url.Parse(finalLoc)
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("expected an auth code, got redirect %q", finalLoc)
+	}
+
+	tokenResp, err := client.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"authorization_code"}, "code": {code}, "code_verifier": {"stray-verifier-nobody-asked-for"},
+		"client_id": {"confidential-client"}, "client_secret": {"s3cret-value"},
+		"redirect_uri": {"http://localhost:9001/callback"},
+	})
+	if err != nil {
+		t.Fatalf("post token: %v", err)
+	}
+	defer tokenResp.Body.Close()
+	if tokenResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 for a stray code_verifier on a non-PKCE code, got %d", tokenResp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(tokenResp.Body).Decode(&body)
+	if body["error"] != "invalid_grant" {
+		t.Fatalf("expected invalid_grant, got %v", body)
+	}
+}

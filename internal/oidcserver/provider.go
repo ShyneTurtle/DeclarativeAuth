@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/identity"
 	"declarativeauth/internal/store"
@@ -37,10 +38,17 @@ type Provider struct {
 	Snapshot        func() *identity.Snapshot
 	CurrentUser     func(r *http.Request) (string, bool)
 	Logger          *slog.Logger
+	// RateLimiter throttles /token by client_id and source IP (nil disables
+	// throttling entirely). Shares the same persisted backoff mechanism as
+	// login/password-reset -- see auth.RateLimiter -- so client-secret
+	// guessing and authorization-code/refresh-token brute-forcing can't run
+	// unthrottled the way they could before.
+	RateLimiter    *auth.RateLimiter
+	TrustedProxies *auth.TrustedProxies
 }
 
 // NewProvider builds a Provider from server config.
-func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, revocations *store.RevokedTokenStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool), logger *slog.Logger) *Provider {
+func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, revocations *store.RevokedTokenStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool), logger *slog.Logger, rateLimiter *auth.RateLimiter, trustedProxies *auth.TrustedProxies) *Provider {
 	return &Provider{
 		Issuer:          cfg.OIDC.Issuer,
 		Keys:            keys,
@@ -51,6 +59,58 @@ func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCode
 		Snapshot:        snapshot,
 		CurrentUser:     currentUser,
 		Logger:          logger,
+		RateLimiter:     rateLimiter,
+		TrustedProxies:  trustedProxies,
+	}
+}
+
+// clientIP resolves the request's client IP through TrustedProxies, or ""
+// if that's unset/unresolvable -- RateLimiter treats an empty IP key as
+// "skip the IP dimension", the same convention used elsewhere.
+func (p *Provider) clientIP(r *http.Request) string {
+	if p.TrustedProxies == nil {
+		return ""
+	}
+	if ip := p.TrustedProxies.ClientIP(r); ip != nil {
+		return ip.String()
+	}
+	return ""
+}
+
+// tokenRateLimited checks (and, if locked, responds to) the /token rate
+// limit for clientID + the request's source IP. Returns true if the
+// request was rejected (response already written) and processing must stop.
+func (p *Provider) tokenRateLimited(w http.ResponseWriter, r *http.Request, clientID string) bool {
+	if p.RateLimiter == nil {
+		return false
+	}
+	locked, err := p.RateLimiter.IsLocked(r.Context(), clientID, p.clientIP(r))
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return true
+	}
+	if locked {
+		writeTokenError(w, http.StatusTooManyRequests, "slow_down")
+		return true
+	}
+	return false
+}
+
+func (p *Provider) recordTokenFailure(r *http.Request, clientID string) {
+	if p.RateLimiter == nil {
+		return
+	}
+	if err := p.RateLimiter.RecordFailure(r.Context(), clientID, p.clientIP(r)); err != nil && p.Logger != nil {
+		p.Logger.Error("failed to record token failure for rate limiting", "component", "oidcserver", "error", err)
+	}
+}
+
+func (p *Provider) recordTokenSuccess(r *http.Request, clientID string) {
+	if p.RateLimiter == nil {
+		return
+	}
+	if err := p.RateLimiter.RecordSuccess(r.Context(), clientID, p.clientIP(r)); err != nil && p.Logger != nil {
+		p.Logger.Error("failed to record token success for rate limiting", "component", "oidcserver", "error", err)
 	}
 }
 
@@ -119,17 +179,26 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	codeChallenge := q.Get("code_challenge")
 	codeChallengeMethod := q.Get("code_challenge_method")
 
+	// redirect_uri must be present and pre-registered before we can trust it
+	// enough to redirect errors to it at all (RFC 6749 §4.1.2.1) -- an
+	// empty/unregistered value can only be reported inline, never via
+	// redirect, since redirecting to it is exactly the open-redirect risk
+	// this check exists to prevent.
+	if redirectURI == "" {
+		http.Error(w, "missing redirect_uri", http.StatusBadRequest)
+		return
+	}
 	client, ok := p.Snapshot().OIDCClients[clientID]
 	if !ok || !RedirectURIAllowed(client, redirectURI) {
 		http.Error(w, "unknown client_id or redirect_uri", http.StatusBadRequest)
 		return
 	}
 	if responseType != "code" {
-		p.redirectError(w, r, redirectURI, state, "unsupported_response_type")
+		p.redirectError(w, r, redirectURI, state, "unsupported_response_type", "only response_type=code is supported")
 		return
 	}
 	if client.Public && (codeChallenge == "" || codeChallengeMethod != "S256") {
-		p.redirectError(w, r, redirectURI, state, "invalid_request")
+		p.redirectError(w, r, redirectURI, state, "invalid_request", "PKCE (code_challenge with code_challenge_method=S256) is required for public clients")
 		return
 	}
 
@@ -166,7 +235,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, dest.String(), http.StatusSeeOther)
 }
 
-func (p *Provider) redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, errCode string) {
+func (p *Provider) redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, errCode, description string) {
 	dest, err := url.Parse(redirectURI)
 	if err != nil {
 		http.Error(w, errCode, http.StatusBadRequest)
@@ -174,6 +243,9 @@ func (p *Provider) redirectError(w http.ResponseWriter, r *http.Request, redirec
 	}
 	qs := dest.Query()
 	qs.Set("error", errCode)
+	if description != "" {
+		qs.Set("error_description", description)
+	}
 	qs.Set("iss", p.Issuer)
 	if state != "" {
 		qs.Set("state", state)
@@ -217,12 +289,18 @@ func (p *Provider) authenticateClient(w http.ResponseWriter, r *http.Request) (c
 		clientSecret = basicSecret
 	}
 
+	if p.tokenRateLimited(w, r, clientID) {
+		return identity.OIDCClient{}, "", false
+	}
+
 	client, found := p.Snapshot().OIDCClients[clientID]
 	if !found {
+		p.recordTokenFailure(r, clientID)
 		writeTokenClientAuthError(w, "invalid_client")
 		return identity.OIDCClient{}, "", false
 	}
 	if !client.Public && subtle.ConstantTimeCompare([]byte(clientSecret), []byte(client.ClientSecret)) != 1 {
+		p.recordTokenFailure(r, clientID)
 		writeTokenClientAuthError(w, "invalid_client")
 		return identity.OIDCClient{}, "", false
 	}
@@ -241,19 +319,32 @@ func (p *Provider) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.R
 
 	ac, err := p.Codes.Redeem(r.Context(), code)
 	if err != nil || ac.ClientID != clientID {
+		p.recordTokenFailure(r, clientID)
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
 	// RFC 6749 §4.1.3: since /authorize always requires a redirect_uri
 	// (see RedirectURIAllowed), the token request's must match it exactly.
 	if redirectURI != ac.RedirectURI {
+		p.recordTokenFailure(r, clientID)
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
-	if ac.CodeChallenge != "" {
+	if ac.CodeChallenge == "" {
+		// A code_verifier with no code_challenge on file means either a
+		// confused client or an attempt to slip PKCE material into a code
+		// that never went through PKCE at /authorize -- reject outright
+		// rather than silently ignoring it.
+		if verifier != "" {
+			p.recordTokenFailure(r, clientID)
+			writeTokenError(w, http.StatusBadRequest, "invalid_grant")
+			return
+		}
+	} else {
 		sum := sha256.Sum256([]byte(verifier))
 		computed := base64.RawURLEncoding.EncodeToString(sum[:])
 		if computed != ac.CodeChallenge {
+			p.recordTokenFailure(r, clientID)
 			writeJSONStatus(w, http.StatusBadRequest, map[string]any{"error": "invalid_grant", "error_description": "PKCE verification failed"})
 			return
 		}
@@ -271,6 +362,7 @@ func (p *Provider) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	p.recordTokenSuccess(r, clientID)
 	writeJSON(w, map[string]any{
 		"access_token":  accessToken,
 		"id_token":      idToken,
@@ -288,11 +380,13 @@ func (p *Provider) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Reques
 
 	sessionID, secret, ok := strings.Cut(r.FormValue("refresh_token"), ".")
 	if !ok {
+		p.recordTokenFailure(r, clientID)
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
 	id, err := uuid.Parse(sessionID)
 	if err != nil {
+		p.recordTokenFailure(r, clientID)
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
@@ -307,10 +401,12 @@ func (p *Provider) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Reques
 		if err == store.ErrRefreshTokenReused && p.Logger != nil {
 			p.Logger.Warn("refresh token reuse detected, session revoked", "component", "oidcserver", "session_id", sessionID, "client_id", clientID)
 		}
+		p.recordTokenFailure(r, clientID)
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
 	if sess.ClientID != clientID {
+		p.recordTokenFailure(r, clientID)
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
@@ -321,6 +417,7 @@ func (p *Provider) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
+	p.recordTokenSuccess(r, clientID)
 	writeJSON(w, map[string]any{
 		"access_token":  accessToken,
 		"id_token":      idToken,
@@ -342,6 +439,7 @@ func (p *Provider) handleClientCredentialsGrant(w http.ResponseWriter, r *http.R
 		return
 	}
 	if client.Public {
+		p.recordTokenFailure(r, clientID)
 		writeTokenError(w, http.StatusBadRequest, "unauthorized_client")
 		return
 	}
@@ -362,6 +460,7 @@ func (p *Provider) handleClientCredentialsGrant(w http.ResponseWriter, r *http.R
 		return
 	}
 
+	p.recordTokenSuccess(r, clientID)
 	writeJSON(w, map[string]any{
 		"access_token": accessToken,
 		"token_type":   "Bearer",
@@ -485,14 +584,14 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
 	if len(authz) <= len(prefix) || authz[:len(prefix)] != prefix {
-		unauthorizedUserinfo(w, "invalid_token")
+		unauthorizedUserinfo(w, "invalid_token", "missing bearer token")
 		return
 	}
 	raw := authz[len(prefix):]
 
 	claims, ok := p.parseAccessOrIDToken(r.Context(), raw)
 	if !ok {
-		unauthorizedUserinfo(w, "invalid_token")
+		unauthorizedUserinfo(w, "invalid_token", "the access token is malformed, expired, or revoked")
 		return
 	}
 	sub, _ := claims["sub"].(string)
@@ -502,10 +601,12 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 }
 
 // unauthorizedUserinfo rejects a bearer token per RFC 6750 §3, which
-// requires a WWW-Authenticate challenge on 401 responses.
-func unauthorizedUserinfo(w http.ResponseWriter, errCode string) {
-	w.Header().Set("WWW-Authenticate", `Bearer error="`+errCode+`"`)
-	w.WriteHeader(http.StatusUnauthorized)
+// requires a WWW-Authenticate challenge on 401 responses -- both there and
+// in a JSON body, so clients that only look at the body (rather than
+// parsing the challenge header) still get a machine-readable reason.
+func unauthorizedUserinfo(w http.ResponseWriter, errCode, description string) {
+	w.Header().Set("WWW-Authenticate", `Bearer error="`+errCode+`", error_description="`+description+`"`)
+	writeJSONStatus(w, http.StatusUnauthorized, map[string]any{"error": errCode, "error_description": description})
 }
 
 // handleIntrospect implements RFC 7662: given a token (access, ID, or
