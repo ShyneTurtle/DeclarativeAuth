@@ -44,6 +44,7 @@ func newHAInstance(t *testing.T, dsn string, rpID string, rpOrigins []string) st
 			SigningAlg:          "ES256",
 			KeyRotationInterval: config.Duration(720 * time.Hour),
 			KeyOverlap:          config.Duration(24 * time.Hour),
+			RefreshTokenTTL:     config.Duration(720 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 3, BackoffBase: config.Duration(200 * time.Millisecond),
@@ -359,6 +360,7 @@ func startHAInstanceAt(t *testing.T, dsn, oidcAddr, rpID string, rpOrigins []str
 			SigningAlg:          "ES256",
 			KeyRotationInterval: config.Duration(720 * time.Hour),
 			KeyOverlap:          config.Duration(24 * time.Hour),
+			RefreshTokenTTL:     config.Duration(720 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 3, BackoffBase: config.Duration(200 * time.Millisecond),

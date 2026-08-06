@@ -1,14 +1,18 @@
 package oidcserver
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/url"
+	"strings"
 	"time"
 
 	"declarativeauth/internal/config"
@@ -16,6 +20,7 @@ import (
 	"declarativeauth/internal/store"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 // Provider is the minimal OIDC authorization-code+PKCE provider. Registered
@@ -23,21 +28,27 @@ import (
 // request rather than cached at startup, so oidc-clients.yaml edits
 // hot-reload the same way users.yaml/groups.yaml already do.
 type Provider struct {
-	Issuer      string
-	Keys        *KeyStore
-	Codes       *store.OIDCCodeStore
-	Snapshot    func() *identity.Snapshot
-	CurrentUser func(r *http.Request) (string, bool)
+	Issuer          string
+	Keys            *KeyStore
+	Codes           *store.OIDCCodeStore
+	Sessions        *store.SessionStore
+	RefreshTokenTTL time.Duration
+	Snapshot        func() *identity.Snapshot
+	CurrentUser     func(r *http.Request) (string, bool)
+	Logger          *slog.Logger
 }
 
 // NewProvider builds a Provider from server config.
-func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool)) *Provider {
+func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool), logger *slog.Logger) *Provider {
 	return &Provider{
-		Issuer:      cfg.OIDC.Issuer,
-		Keys:        keys,
-		Codes:       codes,
-		Snapshot:    snapshot,
-		CurrentUser: currentUser,
+		Issuer:          cfg.OIDC.Issuer,
+		Keys:            keys,
+		Codes:           codes,
+		Sessions:        sessions,
+		RefreshTokenTTL: cfg.OIDC.RefreshTokenTTL.Std(),
+		Snapshot:        snapshot,
+		CurrentUser:     currentUser,
+		Logger:          logger,
 	}
 }
 
@@ -47,6 +58,11 @@ func randomToken(n int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
+}
+
+func hashToken(raw string) string {
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:])
 }
 
 // NewMux builds the http.ServeMux for the OIDC provider surface.
@@ -165,38 +181,57 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid form", http.StatusBadRequest)
 		return
 	}
-	if r.FormValue("grant_type") != "authorization_code" {
+	switch r.FormValue("grant_type") {
+	case "authorization_code":
+		p.handleAuthorizationCodeGrant(w, r)
+	case "refresh_token":
+		p.handleRefreshTokenGrant(w, r)
+	case "client_credentials":
+		p.handleClientCredentialsGrant(w, r)
+	default:
 		writeTokenError(w, http.StatusBadRequest, "unsupported_grant_type")
-		return
 	}
+}
 
-	code := r.FormValue("code")
-	verifier := r.FormValue("code_verifier")
-	clientID := r.FormValue("client_id")
+// authenticateClient validates client credentials the way RFC 6749 §2.3.1
+// requires: HTTP Basic (client_secret_basic) takes precedence over the POST
+// body (client_secret_post) when both are present, and a Basic-auth
+// client_id must match the form's if both are given. Shared across every
+// /token grant type. Writes the RFC 6749 §5.2 invalid_client error itself on
+// failure.
+func (p *Provider) authenticateClient(w http.ResponseWriter, r *http.Request) (client identity.OIDCClient, clientID string, ok bool) {
+	clientID = r.FormValue("client_id")
 	clientSecret := r.FormValue("client_secret")
-	redirectURI := r.FormValue("redirect_uri")
-
-	// RFC 6749 §2.3.1: client_secret_basic (HTTP Basic auth) takes
-	// precedence over client_secret_post (form body) when both are
-	// present; a Basic-auth client_id must also match the form's.
-	if basicID, basicSecret, ok := r.BasicAuth(); ok {
+	if basicID, basicSecret, hasBasic := r.BasicAuth(); hasBasic {
 		if basicID != clientID && clientID != "" {
 			writeTokenClientAuthError(w, "invalid_client")
-			return
+			return identity.OIDCClient{}, "", false
 		}
 		clientID = basicID
 		clientSecret = basicSecret
 	}
 
-	client, ok := p.Snapshot().OIDCClients[clientID]
-	if !ok {
+	client, found := p.Snapshot().OIDCClients[clientID]
+	if !found {
 		writeTokenClientAuthError(w, "invalid_client")
-		return
+		return identity.OIDCClient{}, "", false
 	}
 	if !client.Public && subtle.ConstantTimeCompare([]byte(clientSecret), []byte(client.ClientSecret)) != 1 {
 		writeTokenClientAuthError(w, "invalid_client")
+		return identity.OIDCClient{}, "", false
+	}
+	return client, clientID, true
+}
+
+func (p *Provider) handleAuthorizationCodeGrant(w http.ResponseWriter, r *http.Request) {
+	_, clientID, ok := p.authenticateClient(w, r)
+	if !ok {
 		return
 	}
+
+	code := r.FormValue("code")
+	verifier := r.FormValue("code_verifier")
+	redirectURI := r.FormValue("redirect_uri")
 
 	ac, err := p.Codes.Redeem(r.Context(), code)
 	if err != nil || ac.ClientID != clientID {
@@ -218,31 +253,99 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	snap := p.Snapshot()
-	now := time.Now()
-	idClaims := jwt.MapClaims{
-		"iss": p.Issuer, "sub": ac.Username, "aud": clientID,
-		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
-	}
-	if ac.Nonce != "" {
-		idClaims["nonce"] = ac.Nonce
-	}
-	for k, v := range Claims(snap, ac.Username) {
-		if k != "sub" {
-			idClaims[k] = v
-		}
-	}
-	idToken, err := p.sign(idClaims)
+	idToken, accessToken, err := p.issueTokens(ac.Username, clientID, ac.Scope, ac.Nonce)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
 
-	accessClaims := jwt.MapClaims{
-		"iss": p.Issuer, "sub": ac.Username, "aud": clientID, "scope": ac.Scope,
-		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
+	refreshToken, err := p.issueRefreshToken(r.Context(), ac.Username, clientID, ac.Scope)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
 	}
-	accessToken, err := p.sign(accessClaims)
+
+	writeJSON(w, map[string]any{
+		"access_token":  accessToken,
+		"id_token":      idToken,
+		"refresh_token": refreshToken,
+		"token_type":    "Bearer",
+		"expires_in":    900,
+	})
+}
+
+func (p *Provider) handleRefreshTokenGrant(w http.ResponseWriter, r *http.Request) {
+	_, clientID, ok := p.authenticateClient(w, r)
+	if !ok {
+		return
+	}
+
+	sessionID, secret, ok := strings.Cut(r.FormValue("refresh_token"), ".")
+	if !ok {
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	id, err := uuid.Parse(sessionID)
+	if err != nil {
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+
+	newSecret, err := randomToken(32)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	sess, err := p.Sessions.RotateRefreshToken(r.Context(), id, hashToken(secret), hashToken(newSecret), time.Now().Add(p.RefreshTokenTTL))
+	if err != nil {
+		if err == store.ErrRefreshTokenReused && p.Logger != nil {
+			p.Logger.Warn("refresh token reuse detected, session revoked", "component", "oidcserver", "session_id", sessionID, "client_id", clientID)
+		}
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+	if sess.ClientID != clientID {
+		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
+		return
+	}
+
+	idToken, accessToken, err := p.issueTokens(sess.Username, clientID, sess.Scope, "")
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+
+	writeJSON(w, map[string]any{
+		"access_token":  accessToken,
+		"id_token":      idToken,
+		"refresh_token": id.String() + "." + newSecret,
+		"token_type":    "Bearer",
+		"expires_in":    900,
+	})
+}
+
+// handleClientCredentialsGrant is the machine-to-machine grant (RFC 6749
+// §4.4): no user context, no ID token, no refresh token -- a service client
+// can just request a new access token directly using its own credentials.
+// Restricted to confidential clients: a "public" client has no secret to
+// authenticate with, so allowing it here would let anyone claiming a known
+// public client_id mint tokens with no proof of identity at all.
+func (p *Provider) handleClientCredentialsGrant(w http.ResponseWriter, r *http.Request) {
+	client, clientID, ok := p.authenticateClient(w, r)
+	if !ok {
+		return
+	}
+	if client.Public {
+		writeTokenError(w, http.StatusBadRequest, "unauthorized_client")
+		return
+	}
+
+	scope := r.FormValue("scope")
+	now := time.Now()
+	accessToken, err := p.sign(jwt.MapClaims{
+		"iss": p.Issuer, "sub": clientID, "aud": clientID, "scope": scope,
+		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
+	})
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
@@ -250,10 +353,61 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 
 	writeJSON(w, map[string]any{
 		"access_token": accessToken,
-		"id_token":     idToken,
 		"token_type":   "Bearer",
 		"expires_in":   900,
+		"scope":        scope,
 	})
+}
+
+// issueTokens signs a fresh ID token + access token pair for username/scope.
+func (p *Provider) issueTokens(username, clientID, scope, nonce string) (idToken, accessToken string, err error) {
+	snap := p.Snapshot()
+	now := time.Now()
+	idClaims := jwt.MapClaims{
+		"iss": p.Issuer, "sub": username, "aud": clientID,
+		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
+	}
+	if nonce != "" {
+		idClaims["nonce"] = nonce
+	}
+	for k, v := range Claims(snap, username) {
+		if k != "sub" {
+			idClaims[k] = v
+		}
+	}
+	idToken, err = p.sign(idClaims)
+	if err != nil {
+		return "", "", err
+	}
+
+	accessClaims := jwt.MapClaims{
+		"iss": p.Issuer, "sub": username, "aud": clientID, "scope": scope,
+		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
+	}
+	accessToken, err = p.sign(accessClaims)
+	if err != nil {
+		return "", "", err
+	}
+	return idToken, accessToken, nil
+}
+
+// issueRefreshToken creates a new session row (the same store backing the
+// web login cookie, see store.Session) and returns the opaque bearer value
+// "<session id>.<secret>" -- the id names the row for lookup, the secret is
+// what's hashed and compared, exactly like the web session cookie format.
+func (p *Provider) issueRefreshToken(ctx context.Context, username, clientID, scope string) (string, error) {
+	secret, err := randomToken(32)
+	if err != nil {
+		return "", err
+	}
+	id := uuid.New()
+	if err := p.Sessions.Create(ctx, store.Session{
+		ID: id, Username: username, ClientID: clientID, Scope: scope,
+		RefreshTokenHash: hashToken(secret), ExpiresAt: time.Now().Add(p.RefreshTokenTTL),
+	}); err != nil {
+		return "", err
+	}
+	return id.String() + "." + secret, nil
 }
 
 // writeTokenError writes an RFC 6749 §5.2-shaped error body with the

@@ -167,6 +167,10 @@ type OIDCConfig struct {
 	// signed keep validating. See EnvOIDCKeyRotationInterval/EnvOIDCKeyOverlap.
 	KeyRotationInterval Duration
 	KeyOverlap          Duration
+	// RefreshTokenTTL is how long a refresh token (and the session backing
+	// it) stays valid, refreshed on every rotation -- see
+	// EnvOIDCRefreshTokenTTL.
+	RefreshTokenTTL Duration
 }
 
 type TLSConfig struct {

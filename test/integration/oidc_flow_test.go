@@ -43,6 +43,7 @@ func startFullServerWithSigningAlg(t *testing.T, alg string) (issuer string, hol
 			SigningAlg:          alg,
 			KeyRotationInterval: config.Duration(720 * time.Hour),
 			KeyOverlap:          config.Duration(24 * time.Hour),
+			RefreshTokenTTL:     config.Duration(720 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 5, BackoffBase: config.Duration(time.Second),
@@ -181,8 +182,9 @@ func TestOIDC_FullAuthorizationCodeFlowWithPKCE(t *testing.T) {
 	}
 	idToken, _ := tokenBody["id_token"].(string)
 	accessToken, _ := tokenBody["access_token"].(string)
-	if idToken == "" || accessToken == "" {
-		t.Fatalf("expected id_token and access_token, got %v", tokenBody)
+	refreshToken, _ := tokenBody["refresh_token"].(string)
+	if idToken == "" || accessToken == "" || refreshToken == "" {
+		t.Fatalf("expected id_token, access_token and refresh_token, got %v", tokenBody)
 	}
 
 	claims := jwt.MapClaims{}
@@ -285,7 +287,11 @@ func TestOIDC_TokenErrorsUseNonSuccessStatusCodes(t *testing.T) {
 	client := &http.Client{}
 
 	t.Run("unsupported_grant_type", func(t *testing.T) {
-		resp, err := client.PostForm(issuer+"/token", url.Values{"grant_type": {"client_credentials"}})
+		// "password" (resource owner password credentials, RFC 6749 §4.3) is
+		// deliberately not implemented -- unlike client_credentials, which is
+		// now a real supported grant, this one is a genuine stand-in for
+		// "a grant type this server doesn't support at all".
+		resp, err := client.PostForm(issuer+"/token", url.Values{"grant_type": {"password"}})
 		if err != nil {
 			t.Fatalf("post token: %v", err)
 		}
@@ -541,5 +547,215 @@ func TestOIDC_RS256SigningAlgorithm(t *testing.T) {
 	}
 	if !advertisesRS256 {
 		t.Errorf("expected discovery to advertise RS256, got %v", algs)
+	}
+}
+
+// obtainTokenBody runs the full login + PKCE authorization_code exchange
+// against example-client and returns the decoded /token response.
+func obtainTokenBody(t *testing.T, issuer string, client *http.Client) map[string]any {
+	t.Helper()
+	jar := client.Jar
+
+	verifier := "obtain-tokens-verifier-1234567890"
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	authorizeURL := issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"},
+	}.Encode()
+
+	resp, err := client.Get(authorizeURL)
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, err = client.Get(issuer + loc)
+	if err != nil {
+		t.Fatalf("get login: %v", err)
+	}
+	resp.Body.Close()
+	loginURL, _ := url.Parse(issuer + loc)
+	var csrfToken string
+	for _, c := range jar.Cookies(loginURL) {
+		if c.Name == "da_csrf" {
+			csrfToken = c.Value
+		}
+	}
+	returnTo := loginURL.Query().Get("return_to")
+	resp, err = client.PostForm(issuer+"/login", url.Values{
+		"username": {"jsmith"}, "password": {"Secret123!"}, "csrf_token": {csrfToken}, "return_to": {returnTo},
+	})
+	if err != nil {
+		t.Fatalf("post login: %v", err)
+	}
+	loc = resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, err = client.Get(issuer + loc)
+	if err != nil {
+		t.Fatalf("get authorize (2nd): %v", err)
+	}
+	finalLoc := resp.Header.Get("Location")
+	resp.Body.Close()
+	cbURL, _ := url.Parse(finalLoc)
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("expected an auth code, got redirect %q", finalLoc)
+	}
+
+	tokenResp, err := client.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"authorization_code"}, "code": {code}, "code_verifier": {verifier},
+		"client_id": {"example-client"}, "redirect_uri": {"http://localhost:9000/callback"},
+	})
+	if err != nil {
+		t.Fatalf("post token: %v", err)
+	}
+	defer tokenResp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(tokenResp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	return body
+}
+
+func TestOIDC_RefreshToken_RotatesAndReissuesTokens(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	body := obtainTokenBody(t, issuer, client)
+	firstRefresh, _ := body["refresh_token"].(string)
+	if firstRefresh == "" {
+		t.Fatalf("expected a refresh_token, got %v", body)
+	}
+
+	refreshResp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {firstRefresh}, "client_id": {"example-client"},
+	})
+	if err != nil {
+		t.Fatalf("post refresh: %v", err)
+	}
+	defer refreshResp.Body.Close()
+	if refreshResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from refresh grant, got %d", refreshResp.StatusCode)
+	}
+	var refreshBody map[string]any
+	if err := json.NewDecoder(refreshResp.Body).Decode(&refreshBody); err != nil {
+		t.Fatalf("decode refresh response: %v", err)
+	}
+	newAccessToken, _ := refreshBody["access_token"].(string)
+	newIDToken, _ := refreshBody["id_token"].(string)
+	secondRefresh, _ := refreshBody["refresh_token"].(string)
+	if newAccessToken == "" || newIDToken == "" || secondRefresh == "" {
+		t.Fatalf("expected a full token set from the refresh grant, got %v", refreshBody)
+	}
+	if secondRefresh == firstRefresh {
+		t.Fatal("expected the refresh grant to rotate to a new refresh_token, not reuse the old one")
+	}
+
+	// The rotated-away first refresh token must no longer work.
+	replayResp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {firstRefresh}, "client_id": {"example-client"},
+	})
+	if err != nil {
+		t.Fatalf("post replay: %v", err)
+	}
+	defer replayResp.Body.Close()
+	if replayResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 invalid_grant replaying a rotated-away refresh token, got %d", replayResp.StatusCode)
+	}
+
+	// Reuse detection: since the old token was replayed, the whole session
+	// is revoked, so even the *current* (second) refresh token must now be
+	// rejected too.
+	secondUseResp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {secondRefresh}, "client_id": {"example-client"},
+	})
+	if err != nil {
+		t.Fatalf("post second use: %v", err)
+	}
+	defer secondUseResp.Body.Close()
+	if secondUseResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected reuse detection to have revoked the session, got %d", secondUseResp.StatusCode)
+	}
+}
+
+func TestOIDC_RefreshToken_WrongClientRejected(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	body := obtainTokenBody(t, issuer, client)
+	refreshToken, _ := body["refresh_token"].(string)
+
+	resp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {refreshToken},
+		"client_id": {"confidential-client"}, "client_secret": {"s3cret-value"},
+	})
+	if err != nil {
+		t.Fatalf("post refresh: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 using a refresh token minted for a different client, got %d", resp.StatusCode)
+	}
+}
+
+func TestOIDC_ClientCredentialsGrant(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	resp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"client_credentials"}, "client_id": {"confidential-client"},
+		"client_secret": {"s3cret-value"}, "scope": {"api:read"},
+	})
+	if err != nil {
+		t.Fatalf("post client_credentials: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	accessToken, _ := body["access_token"].(string)
+	if accessToken == "" {
+		t.Fatalf("expected an access_token, got %v", body)
+	}
+	if _, hasIDToken := body["id_token"]; hasIDToken {
+		t.Error("client_credentials must not issue an id_token (no user context)")
+	}
+	if _, hasRefresh := body["refresh_token"]; hasRefresh {
+		t.Error("client_credentials must not issue a refresh_token (RFC 6749 §4.4.3)")
+	}
+
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(accessToken, claims); err != nil {
+		t.Fatalf("parse access_token: %v", err)
+	}
+	if claims["sub"] != "confidential-client" {
+		t.Fatalf("expected sub=confidential-client, got %v", claims["sub"])
+	}
+}
+
+func TestOIDC_ClientCredentialsGrant_RejectsPublicClient(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	resp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"client_credentials"}, "client_id": {"example-client"},
+	})
+	if err != nil {
+		t.Fatalf("post client_credentials: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 rejecting a public client from client_credentials, got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	_ = json.NewDecoder(resp.Body).Decode(&body)
+	if body["error"] != "unauthorized_client" {
+		t.Fatalf("expected unauthorized_client, got %v", body)
 	}
 }

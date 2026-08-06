@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"declarativeauth/internal/store"
+
+	"github.com/google/uuid"
 )
 
 func TestOIDCCodeStore_RedeemIsSingleUse(t *testing.T) {
@@ -160,4 +162,94 @@ func TestOIDCKeyStore_RotateIfDue_BootstrapsAndOverlapsOnRotation(t *testing.T) 
 func randomKid(t *testing.T) string {
 	t.Helper()
 	return t.Name() + "-" + time.Now().Format("150405.000000000")
+}
+
+func TestSessionStore_RotateRefreshToken_Success(t *testing.T) {
+	pool := setupPool(t)
+	sessions := &store.SessionStore{Pool: pool}
+	ctx := context.Background()
+
+	id := uuid.New()
+	if err := sessions.Create(ctx, store.Session{
+		ID: id, Username: "jsmith", ClientID: "c1", Scope: "openid",
+		RefreshTokenHash: "hash-v1", ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	sess, err := sessions.RotateRefreshToken(ctx, id, "hash-v1", "hash-v2", time.Now().Add(2*time.Hour))
+	if err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+	if sess.Username != "jsmith" || sess.ClientID != "c1" || sess.Scope != "openid" {
+		t.Fatalf("unexpected session: %+v", sess)
+	}
+
+	// The old hash must no longer work; the new one must.
+	if _, err := sessions.RotateRefreshToken(ctx, id, "hash-v1", "hash-v3", time.Now().Add(time.Hour)); err == nil {
+		t.Fatal("expected the old (rotated-away) hash to be rejected")
+	}
+	fresh, err := sessions.GetByID(ctx, id)
+	if err != nil {
+		t.Fatalf("get by id: %v", err)
+	}
+	if fresh.RefreshTokenHash != "hash-v2" {
+		t.Fatalf("expected the hash to still be hash-v2 after a rejected rotation, got %q", fresh.RefreshTokenHash)
+	}
+}
+
+func TestSessionStore_RotateRefreshToken_ReuseRevokesSession(t *testing.T) {
+	pool := setupPool(t)
+	sessions := &store.SessionStore{Pool: pool}
+	ctx := context.Background()
+
+	id := uuid.New()
+	if err := sessions.Create(ctx, store.Session{
+		ID: id, Username: "jsmith", ClientID: "c1",
+		RefreshTokenHash: "hash-v1", ExpiresAt: time.Now().Add(time.Hour),
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+
+	// Legitimate rotation.
+	if _, err := sessions.RotateRefreshToken(ctx, id, "hash-v1", "hash-v2", time.Now().Add(time.Hour)); err != nil {
+		t.Fatalf("rotate: %v", err)
+	}
+
+	// Replaying the now-stale first-generation hash must be detected as
+	// reuse and revoke the session outright.
+	if _, err := sessions.RotateRefreshToken(ctx, id, "hash-v1", "hash-vX", time.Now().Add(time.Hour)); err != store.ErrRefreshTokenReused {
+		t.Fatalf("expected ErrRefreshTokenReused, got %v", err)
+	}
+
+	// The session is now revoked, so even the *current* (second-generation)
+	// hash must be rejected too.
+	if _, err := sessions.RotateRefreshToken(ctx, id, "hash-v2", "hash-v3", time.Now().Add(time.Hour)); err != store.ErrNotFound {
+		t.Fatalf("expected the revoked session to reject even its current hash, got %v", err)
+	}
+}
+
+func TestSessionStore_RotateRefreshToken_UnknownSession(t *testing.T) {
+	pool := setupPool(t)
+	sessions := &store.SessionStore{Pool: pool}
+	if _, err := sessions.RotateRefreshToken(context.Background(), uuid.New(), "a", "b", time.Now().Add(time.Hour)); err != store.ErrNotFound {
+		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+func TestSessionStore_RotateRefreshToken_ExpiredSession(t *testing.T) {
+	pool := setupPool(t)
+	sessions := &store.SessionStore{Pool: pool}
+	ctx := context.Background()
+
+	id := uuid.New()
+	if err := sessions.Create(ctx, store.Session{
+		ID: id, Username: "jsmith", ClientID: "c1",
+		RefreshTokenHash: "hash-v1", ExpiresAt: time.Now().Add(-time.Hour),
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if _, err := sessions.RotateRefreshToken(ctx, id, "hash-v1", "hash-v2", time.Now().Add(time.Hour)); err != store.ErrNotFound {
+		t.Fatalf("expected ErrNotFound for an expired session, got %v", err)
+	}
 }

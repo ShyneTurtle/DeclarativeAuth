@@ -46,6 +46,7 @@ func startFullServerWithWebAuthn(t *testing.T) (issuer string, rp virtualwebauth
 			SigningAlg:          "ES256",
 			KeyRotationInterval: config.Duration(720 * time.Hour),
 			KeyOverlap:          config.Duration(24 * time.Hour),
+			RefreshTokenTTL:     config.Duration(720 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 5, BackoffBase: config.Duration(time.Second),

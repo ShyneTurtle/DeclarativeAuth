@@ -34,6 +34,9 @@ func TestLoadServerConfigFromEnv_Defaults(t *testing.T) {
 	if cfg.OIDC.KeyOverlap.Std() != 24*time.Hour {
 		t.Errorf("expected default OIDC key overlap 24h, got %v", cfg.OIDC.KeyOverlap.Std())
 	}
+	if cfg.OIDC.RefreshTokenTTL.Std() != 720*time.Hour {
+		t.Errorf("expected default OIDC refresh token TTL 720h, got %v", cfg.OIDC.RefreshTokenTTL.Std())
+	}
 	if cfg.OIDC.ListenAddr != "" || cfg.OIDC.SecureListenAddr != "" {
 		t.Errorf("expected OIDC listeners unset by default: %+v", cfg.OIDC)
 	}
@@ -94,6 +97,7 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvOIDCSigningAlg, "RS256")
 	t.Setenv(EnvOIDCKeyRotationInterval, "48h")
 	t.Setenv(EnvOIDCKeyOverlap, "2h")
+	t.Setenv(EnvOIDCRefreshTokenTTL, "100h")
 	t.Setenv(EnvNetworkTrustedProxies, "10.0.0.0/8, 192.168.1.0/24")
 	t.Setenv(EnvNetworkTrustDefaultGateway, "false")
 	t.Setenv(EnvRateLimitThreshold, "10")
@@ -132,6 +136,9 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	}
 	if cfg.OIDC.KeyOverlap.Std() != 2*time.Hour {
 		t.Errorf("unexpected OIDC key overlap: %v", cfg.OIDC.KeyOverlap.Std())
+	}
+	if cfg.OIDC.RefreshTokenTTL.Std() != 100*time.Hour {
+		t.Errorf("unexpected OIDC refresh token TTL: %v", cfg.OIDC.RefreshTokenTTL.Std())
 	}
 	if want := []string{"10.0.0.0/8", "192.168.1.0/24"}; len(cfg.Network.TrustedProxies) != 2 ||
 		cfg.Network.TrustedProxies[0] != want[0] || cfg.Network.TrustedProxies[1] != want[1] {

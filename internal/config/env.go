@@ -51,6 +51,9 @@ const (
 	// days) and 24h respectively -- see OIDCConfig.KeyRotationInterval.
 	EnvOIDCKeyRotationInterval = "DECLARATIVEAUTH_OIDC_KEY_ROTATION_INTERVAL"
 	EnvOIDCKeyOverlap          = "DECLARATIVEAUTH_OIDC_KEY_OVERLAP"
+	// EnvOIDCRefreshTokenTTL defaults to 720h (30 days) -- see
+	// OIDCConfig.RefreshTokenTTL.
+	EnvOIDCRefreshTokenTTL = "DECLARATIVEAUTH_OIDC_REFRESH_TOKEN_TTL"
 
 	EnvSMTPHost               = "DECLARATIVEAUTH_SMTP_HOST"
 	EnvSMTPPort               = "DECLARATIVEAUTH_SMTP_PORT"
@@ -192,6 +195,9 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 		return nil, err
 	}
 	if cfg.OIDC.KeyOverlap, err = getenvDuration(EnvOIDCKeyOverlap, 24*time.Hour); err != nil {
+		return nil, err
+	}
+	if cfg.OIDC.RefreshTokenTTL, err = getenvDuration(EnvOIDCRefreshTokenTTL, 720*time.Hour); err != nil {
 		return nil, err
 	}
 	if cfg.SMTP.Port, err = getenvInt(EnvSMTPPort, 0); err != nil {

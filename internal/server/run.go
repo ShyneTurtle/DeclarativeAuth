@@ -195,7 +195,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			return fmt.Errorf("initializing OIDC signing keys: %w", err)
 		}
 		oidcCodes := &store.OIDCCodeStore{Pool: pool}
-		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, holder.Get, sessions.CurrentUser)
+		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, holder.Get, sessions.CurrentUser, logger)
 		g.Go(func() error {
 			return maintainOIDCState(gctx, oidcKeys, oidcCodes, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
 		})
