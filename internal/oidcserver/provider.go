@@ -128,16 +128,90 @@ func hashToken(raw string) string {
 }
 
 // NewMux builds the http.ServeMux for the OIDC provider surface.
+//
+// CORS is deliberately split in two tiers: discovery/JWKS carry no secrets
+// and exist specifically so an RP can bootstrap itself before it's done
+// anything provider-specific, so they're open to any origin
+// (Access-Control-Allow-Origin: *). /token, /userinfo, /revoke, and
+// /introspect are scoped to origins matching a registered client's
+// redirect_uri (see originAllowed) -- this is what makes the PKCE public-
+// client flow actually usable from a browser-based SPA calling fetch()
+// directly, which the server already supported at the protocol level but
+// couldn't serve to a browser without this. /authorize is a full-page
+// navigation/redirect, never a fetch() target, so it carries no CORS
+// headers at all.
 func (p *Provider) NewMux() *http.ServeMux {
 	mux := http.NewServeMux()
-	mux.HandleFunc("/.well-known/openid-configuration", p.handleDiscovery)
-	mux.HandleFunc("/.well-known/jwks.json", p.handleJWKS)
+	mux.HandleFunc("/.well-known/openid-configuration", withOpenCORS(p.handleDiscovery))
+	mux.HandleFunc("/.well-known/jwks.json", withOpenCORS(p.handleJWKS))
 	mux.HandleFunc("/authorize", p.handleAuthorize)
-	mux.HandleFunc("/token", p.handleToken)
-	mux.HandleFunc("/userinfo", p.handleUserinfo)
-	mux.HandleFunc("/revoke", p.handleRevoke)
-	mux.HandleFunc("/introspect", p.handleIntrospect)
+	mux.HandleFunc("/token", p.withCORS(p.handleToken))
+	mux.HandleFunc("/userinfo", p.withCORS(p.handleUserinfo))
+	mux.HandleFunc("/revoke", p.withCORS(p.handleRevoke))
+	mux.HandleFunc("/introspect", p.withCORS(p.handleIntrospect))
 	return mux
+}
+
+// withOpenCORS marks a response as fetchable from any origin -- for
+// endpoints that are public metadata with no secrets and no per-caller
+// behavior (discovery, JWKS).
+func withOpenCORS(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Access-Control-Allow-Origin", "*")
+		if r.Method == http.MethodOptions {
+			w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h(w, r)
+	}
+}
+
+// originAllowed reports whether origin (scheme://host[:port]) matches a
+// registered redirect_uri's origin for any client -- the same trust
+// boundary /authorize already enforces (RedirectURIAllowed), reused here
+// rather than a separate allowlist so there's one place that defines "an
+// origin this deployment's clients actually run on".
+func (p *Provider) originAllowed(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme == "" || u.Host == "" {
+		return false
+	}
+	target := u.Scheme + "://" + u.Host
+	for _, c := range p.Snapshot().OIDCClients {
+		for _, ru := range c.RedirectURIs {
+			ruURL, err := url.Parse(ru)
+			if err == nil && ruURL.Scheme+"://"+ruURL.Host == target {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// withCORS allows cross-origin fetch() calls only from an origin registered
+// on some client's redirect_uri (see originAllowed) -- unlike
+// withOpenCORS, these endpoints can involve a bearer token or client
+// credentials, so a blanket "*" would let any web page read the response.
+func (p *Provider) withCORS(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		origin := r.Header.Get("Origin")
+		allowed := origin != "" && p.originAllowed(origin)
+		if allowed {
+			w.Header().Set("Access-Control-Allow-Origin", origin)
+			w.Header().Set("Vary", "Origin")
+		}
+		if r.Method == http.MethodOptions {
+			if allowed {
+				w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+				w.Header().Set("Access-Control-Allow-Headers", "Authorization, Content-Type")
+				w.Header().Set("Access-Control-Max-Age", "600")
+			}
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		h(w, r)
+	}
 }
 
 func (p *Provider) handleDiscovery(w http.ResponseWriter, r *http.Request) {

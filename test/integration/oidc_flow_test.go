@@ -1085,3 +1085,86 @@ func TestOIDC_Token_StrayCodeVerifierRejected(t *testing.T) {
 		t.Fatalf("expected invalid_grant, got %v", body)
 	}
 }
+
+func TestOIDC_CORS_DiscoveryAndJWKSAreOpenToAnyOrigin(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	for _, path := range []string{"/.well-known/openid-configuration", "/.well-known/jwks.json"} {
+		req, _ := http.NewRequest(http.MethodGet, issuer+path, nil)
+		req.Header.Set("Origin", "https://totally-unregistered.example.com")
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatalf("get %s: %v", path, err)
+		}
+		resp.Body.Close()
+		if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "*" {
+			t.Errorf("%s: expected Access-Control-Allow-Origin=*, got %q", path, got)
+		}
+	}
+}
+
+func TestOIDC_CORS_TokenAllowsRegisteredClientOrigin(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	// example-client's registered redirect_uri is http://localhost:9000/callback.
+	req, _ := http.NewRequest(http.MethodPost, issuer+"/token", strings.NewReader(url.Values{
+		"grant_type": {"client_credentials"}, "client_id": {"confidential-client"}, "client_secret": {"s3cret-value"},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "http://localhost:9000")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post token: %v", err)
+	}
+	defer resp.Body.Close()
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:9000" {
+		t.Errorf("expected Access-Control-Allow-Origin echoing the registered origin, got %q", got)
+	}
+	if got := resp.Header.Get("Vary"); got != "Origin" {
+		t.Errorf("expected Vary: Origin, got %q", got)
+	}
+}
+
+func TestOIDC_CORS_TokenRejectsUnregisteredOrigin(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	req, _ := http.NewRequest(http.MethodPost, issuer+"/token", strings.NewReader(url.Values{
+		"grant_type": {"client_credentials"}, "client_id": {"confidential-client"}, "client_secret": {"s3cret-value"},
+	}.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Origin", "https://evil.example.com")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("post token: %v", err)
+	}
+	defer resp.Body.Close()
+	// The request itself still succeeds server-side (CORS is a browser-
+	// enforced boundary, not a server-side auth check) -- what matters is
+	// that no Access-Control-Allow-Origin header endorses reading the
+	// response from that origin, so a browser would block script access to it.
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "" {
+		t.Errorf("expected no Access-Control-Allow-Origin for an unregistered origin, got %q", got)
+	}
+}
+
+func TestOIDC_CORS_TokenPreflightForRegisteredOrigin(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	req, _ := http.NewRequest(http.MethodOptions, issuer+"/token", nil)
+	req.Header.Set("Origin", "http://localhost:9000")
+	req.Header.Set("Access-Control-Request-Method", "POST")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("preflight: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("expected 204 for a CORS preflight, got %d", resp.StatusCode)
+	}
+	if got := resp.Header.Get("Access-Control-Allow-Origin"); got != "http://localhost:9000" {
+		t.Errorf("expected Access-Control-Allow-Origin on preflight, got %q", got)
+	}
+	if resp.Header.Get("Access-Control-Allow-Methods") == "" {
+		t.Error("expected Access-Control-Allow-Methods on preflight")
+	}
+}
