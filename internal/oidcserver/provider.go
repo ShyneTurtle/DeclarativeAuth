@@ -49,10 +49,15 @@ type Provider struct {
 	// unthrottled the way they could before.
 	RateLimiter    *auth.RateLimiter
 	TrustedProxies *auth.TrustedProxies
+	// Logout clears the caller's web session cookie/row (RP-Initiated
+	// Logout, see handleEndSession) -- typically web.SessionManager.Clear.
+	// A plain func(w, r) rather than importing the web package directly,
+	// matching how CurrentUserWithAuthTime is threaded in.
+	Logout func(w http.ResponseWriter, r *http.Request)
 }
 
 // NewProvider builds a Provider from server config.
-func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, revocations *store.RevokedTokenStore, snapshot func() *identity.Snapshot, currentUserWithAuthTime func(r *http.Request) (string, time.Time, bool), logger *slog.Logger, rateLimiter *auth.RateLimiter, trustedProxies *auth.TrustedProxies) *Provider {
+func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, revocations *store.RevokedTokenStore, snapshot func() *identity.Snapshot, currentUserWithAuthTime func(r *http.Request) (string, time.Time, bool), logout func(w http.ResponseWriter, r *http.Request), logger *slog.Logger, rateLimiter *auth.RateLimiter, trustedProxies *auth.TrustedProxies) *Provider {
 	return &Provider{
 		Issuer:                  cfg.OIDC.Issuer,
 		Keys:                    keys,
@@ -62,6 +67,7 @@ func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCode
 		RefreshTokenTTL:         cfg.OIDC.RefreshTokenTTL.Std(),
 		Snapshot:                snapshot,
 		CurrentUserWithAuthTime: currentUserWithAuthTime,
+		Logout:                  logout,
 		Logger:                  logger,
 		RateLimiter:             rateLimiter,
 		TrustedProxies:          trustedProxies,
@@ -165,6 +171,7 @@ func (p *Provider) NewMux() *http.ServeMux {
 	mux.HandleFunc("/userinfo", p.withCORS(p.handleUserinfo))
 	mux.HandleFunc("/revoke", p.withCORS(p.handleRevoke))
 	mux.HandleFunc("/introspect", p.withCORS(p.handleIntrospect))
+	mux.HandleFunc("/endsession", p.handleEndSession)
 	return mux
 }
 
@@ -239,13 +246,23 @@ func (p *Provider) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"jwks_uri":                              p.Issuer + "/.well-known/jwks.json",
 		"revocation_endpoint":                   p.Issuer + "/revoke",
 		"introspection_endpoint":                p.Issuer + "/introspect",
+		"end_session_endpoint":                  p.Issuer + "/endsession",
 		"response_types_supported":              []string{"code"},
+		"grant_types_supported":                 []string{"authorization_code", "refresh_token", "client_credentials"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": p.Keys.SupportedAlgorithms(),
 		"scopes_supported":                      []string{"openid", "profile", "email", "groups"},
 		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
-		"code_challenge_methods_supported":      []string{"S256"},
-		"claims_supported":                      []string{"sub", "email", "name", "preferred_username", "groups"},
+		"revocation_endpoint_auth_methods_supported":   []string{"none", "client_secret_post", "client_secret_basic"},
+		"introspection_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
+		"code_challenge_methods_supported":               []string{"S256"},
+		"claims_supported":                               []string{"sub", "email", "name", "given_name", "family_name", "preferred_username", "groups"},
+		"claims_parameter_supported":                      false,
+		"request_uri_parameter_supported":                 false,
+		"require_request_uri_registration":                false,
+		"prompt_values_supported":                         []string{"none", "login"},
+		"backchannel_logout_supported":                    false,
+		"frontchannel_logout_supported":                   false,
 	})
 }
 
@@ -842,6 +859,60 @@ func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	w.WriteHeader(http.StatusOK)
+}
+
+// handleEndSession implements RP-Initiated Logout: it clears the caller's
+// web session (so /authorize won't silently treat them as still logged in),
+// then either redirects to post_logout_redirect_uri -- only if it's
+// pre-registered for the client, the same open-redirect guard /authorize's
+// redirect_uri already gets -- or renders a plain confirmation.
+//
+// id_token_hint, if present and verifiable, is authoritative for which
+// client's post_logout_redirect_uri list to check, overriding a client_id
+// query parameter -- an attacker shouldn't be able to redirect to a URI
+// registered for a *different* client just by naming it in the query string.
+func (p *Provider) handleEndSession(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	idTokenHint := r.FormValue("id_token_hint")
+	postLogoutURI := r.FormValue("post_logout_redirect_uri")
+	state := r.FormValue("state")
+	clientID := r.FormValue("client_id")
+
+	if idTokenHint != "" {
+		if claims, ok := p.parseAccessOrIDToken(r.Context(), idTokenHint); ok {
+			if aud, _ := claims["aud"].(string); aud != "" {
+				clientID = aud
+			}
+		}
+	}
+
+	if p.Logout != nil {
+		p.Logout(w, r)
+	}
+
+	if postLogoutURI == "" {
+		writeJSON(w, map[string]any{"status": "logged_out"})
+		return
+	}
+	client, ok := p.Snapshot().OIDCClients[clientID]
+	if !ok || !PostLogoutRedirectURIAllowed(client, postLogoutURI) {
+		writeJSON(w, map[string]any{"status": "logged_out"})
+		return
+	}
+	dest, err := url.Parse(postLogoutURI)
+	if err != nil {
+		writeJSON(w, map[string]any{"status": "logged_out"})
+		return
+	}
+	if state != "" {
+		qs := dest.Query()
+		qs.Set("state", state)
+		dest.RawQuery = qs.Encode()
+	}
+	http.Redirect(w, r, dest.String(), http.StatusSeeOther)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {

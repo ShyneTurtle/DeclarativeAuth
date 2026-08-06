@@ -85,6 +85,10 @@ type OIDCClientFile struct {
 type OIDCClientSpec struct {
 	ClientID     string   `json:"clientID"`
 	RedirectURIs []string `json:"redirectURIs"`
+	// PostLogoutRedirectURIs, when set, are the URIs this client may ask to
+	// be redirected to after RP-Initiated Logout. Optional -- a client that
+	// never sends post_logout_redirect_uri doesn't need this.
+	PostLogoutRedirectURIs []string `json:"postLogoutRedirectURIs"`
 	// Public: true = public client (SPA/mobile; PKCE required, no secret).
 	// Public: false = confidential client -- ClientSecret must also be set.
 	Public       bool   `json:"public"`

@@ -151,10 +151,11 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 					return nil, fmt.Errorf("%s: confidential OIDC client %q (public: false) must set clientSecret", f, c.ClientID)
 				}
 				oidcClients[c.ClientID] = identity.OIDCClient{
-					ClientID:     c.ClientID,
-					RedirectURIs: c.RedirectURIs,
-					Public:       c.Public,
-					ClientSecret: c.ClientSecret,
+					ClientID:               c.ClientID,
+					RedirectURIs:           c.RedirectURIs,
+					PostLogoutRedirectURIs: c.PostLogoutRedirectURIs,
+					Public:                 c.Public,
+					ClientSecret:           c.ClientSecret,
 				}
 			}
 

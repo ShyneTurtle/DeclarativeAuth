@@ -1478,3 +1478,152 @@ func TestOIDC_Authorize_MaxAgeAllowsFreshSession(t *testing.T) {
 		t.Fatalf("expected max_age=3600 to accept a freshly-created session, got %q", loc)
 	}
 }
+
+func TestOIDC_Discovery_AdvertisesEndSessionAndGrantTypes(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	resp, err := http.Get(issuer + "/.well-known/openid-configuration")
+	if err != nil {
+		t.Fatalf("get discovery: %v", err)
+	}
+	defer resp.Body.Close()
+	var disc map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&disc); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if disc["end_session_endpoint"] != issuer+"/endsession" {
+		t.Errorf("expected end_session_endpoint=%q, got %v", issuer+"/endsession", disc["end_session_endpoint"])
+	}
+	grantTypes, _ := disc["grant_types_supported"].([]any)
+	wantGrants := map[string]bool{"authorization_code": false, "refresh_token": false, "client_credentials": false}
+	for _, g := range grantTypes {
+		if s, ok := g.(string); ok {
+			if _, known := wantGrants[s]; known {
+				wantGrants[s] = true
+			}
+		}
+	}
+	for g, seen := range wantGrants {
+		if !seen {
+			t.Errorf("expected grant_types_supported to include %q, got %v", g, grantTypes)
+		}
+	}
+}
+
+func TestOIDC_EndSession_RedirectsToRegisteredPostLogoutURI(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	loginSession(t, issuer, client)
+
+	resp, err := client.Get(issuer + "/endsession?" + url.Values{
+		"client_id": {"example-client"}, "post_logout_redirect_uri": {"http://localhost:9000/logged-out"}, "state": {"xyz"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get endsession: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected a redirect to the registered post_logout_redirect_uri, got %d", resp.StatusCode)
+	}
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, "http://localhost:9000/logged-out") {
+		t.Fatalf("expected redirect to http://localhost:9000/logged-out, got %q", loc)
+	}
+	u, _ := url.Parse(loc)
+	if u.Query().Get("state") != "xyz" {
+		t.Errorf("expected state to be echoed back, got %q", u.Query().Get("state"))
+	}
+}
+
+func TestOIDC_EndSession_RejectsUnregisteredPostLogoutURI(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	loginSession(t, issuer, client)
+
+	resp, err := client.Get(issuer + "/endsession?" + url.Values{
+		"client_id": {"example-client"}, "post_logout_redirect_uri": {"https://evil.example.com/"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get endsession: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected a plain 200 confirmation (never a redirect to an unregistered URI), got %d", resp.StatusCode)
+	}
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if body["status"] != "logged_out" {
+		t.Fatalf("expected status=logged_out, got %v", body)
+	}
+}
+
+func TestOIDC_EndSession_ClearsSession(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	loginSession(t, issuer, client)
+
+	// Silent auth succeeds before logout.
+	before, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"prompt": {"none"}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize (before logout): %v", err)
+	}
+	before.Body.Close()
+	if loc := before.Header.Get("Location"); !strings.HasPrefix(loc, "http://localhost:9000/callback") {
+		t.Fatalf("expected a session to exist before logout, got redirect %q", loc)
+	}
+
+	resp, err := client.Get(issuer + "/endsession")
+	if err != nil {
+		t.Fatalf("get endsession: %v", err)
+	}
+	resp.Body.Close()
+
+	// Silent auth must now fail: the session is gone.
+	after, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"prompt": {"none"}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize (after logout): %v", err)
+	}
+	defer after.Body.Close()
+	loc := after.Header.Get("Location")
+	u, _ := url.Parse(loc)
+	if u.Query().Get("error") != "login_required" {
+		t.Fatalf("expected login_required after logout, got redirect %q", loc)
+	}
+}
+
+func TestOIDC_EndSession_IDTokenHintDeterminesClient(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	body := obtainTokenBody(t, issuer, client)
+	idToken, _ := body["id_token"].(string)
+
+	// No client_id given at all -- only id_token_hint, whose aud is
+	// example-client, must be enough to validate post_logout_redirect_uri.
+	resp, err := client.Get(issuer + "/endsession?" + url.Values{
+		"id_token_hint": {idToken}, "post_logout_redirect_uri": {"http://localhost:9000/logged-out"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get endsession: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusSeeOther {
+		t.Fatalf("expected id_token_hint alone to authorize the redirect, got %d", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); !strings.HasPrefix(loc, "http://localhost:9000/logged-out") {
+		t.Fatalf("expected redirect to http://localhost:9000/logged-out, got %q", loc)
+	}
+}

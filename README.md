@@ -34,7 +34,11 @@ This is a lightweight & secure alternative to hard to heavy (authentik), hard to
 - **Single static binary**, ~27MB container image, a few MB of RSS at idle.
 - **Passkey (WebAuthn) support**
 - **Username or email, interchangeably**, both resolve to the same account.
-- **OIDC provider**, authorization code + PKCE
+- **OIDC provider**: authorization code + PKCE, refresh token rotation with
+  reuse detection, `client_credentials` for service clients, token
+  introspection/revocation (RFC 7662/7009), RP-Initiated Logout, CORS on the
+  public-client endpoints, and Postgres-backed signing keys (ES256 or RS256)
+  that rotate automatically and work across replicas
 - **LDAP v3 server** (simple bind + search) with fully flattened
   `memberOf`, so LDAP-only clients don't need to understand nested groups.
 - **Insecure-configuration guards**: the browser refuses to submit any password 
