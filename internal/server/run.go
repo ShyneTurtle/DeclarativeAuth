@@ -190,11 +190,15 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Secure:   cfg.OIDC.SecureListenAddr != "",
 			Logger:   logger,
 		}
-		keys, err := oidcserver.NewKeySet()
+		oidcKeys, err := oidcserver.NewKeyStore(gctx, pool, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std())
 		if err != nil {
-			return fmt.Errorf("generating OIDC signing key: %w", err)
+			return fmt.Errorf("initializing OIDC signing keys: %w", err)
 		}
-		provider := oidcserver.NewProvider(cfg, keys, holder.Get, sessions.CurrentUser)
+		oidcCodes := &store.OIDCCodeStore{Pool: pool}
+		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, holder.Get, sessions.CurrentUser)
+		g.Go(func() error {
+			return maintainOIDCState(gctx, oidcKeys, oidcCodes, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
+		})
 		mfaSettings := &store.UserMFASettingsStore{Pool: pool}
 		mfaChallenges := &store.EmailChallengeStore{Pool: pool}
 		mfaPolicy := &auth.MFAPolicy{Snapshot: holder.Get, Settings: mfaSettings}
@@ -407,6 +411,32 @@ func serveHTTPUntilDone(ctx context.Context, srv *http.Server, useTLS bool, logg
 			return nil
 		}
 		return err
+	}
+}
+
+// maintainOIDCState runs on every replica: it checks whether the shared
+// signing key is due for rotation (safe to call concurrently -- see
+// store.OIDCKeyStore.RotateIfDue, which serializes racing replicas via row
+// locking), refreshing this replica's local key cache either way so a
+// rotation performed by another replica is picked up promptly, and sweeps
+// expired authorization codes so the table doesn't grow unbounded.
+func maintainOIDCState(ctx context.Context, keys *oidcserver.KeyStore, codes *store.OIDCCodeStore, algorithm string, rotationInterval, overlap time.Duration, logger *slog.Logger) error {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if rotated, err := keys.RotateIfDue(ctx, algorithm, rotationInterval, overlap); err != nil {
+				logger.Error("oidc signing key rotation failed", "component", "oidcserver", "error", err)
+			} else if rotated {
+				logger.Info("oidc signing key rotated", "component", "oidcserver")
+			}
+			if _, err := codes.DeleteExpired(ctx); err != nil {
+				logger.Error("oidc authorization code cleanup failed", "component", "oidcserver", "error", err)
+			}
+		}
 	}
 }
 

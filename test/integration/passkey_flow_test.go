@@ -41,8 +41,11 @@ func startFullServerWithWebAuthn(t *testing.T) (issuer string, rp virtualwebauth
 		Database: config.DatabaseConfig{DSN: testDSN(t), MaxConns: 5},
 		LDAP:     config.LDAPConfig{ListenAddr: ldapAddr, BaseDN: "dc=example,dc=com"},
 		OIDC: config.OIDCConfig{
-			Issuer:     "http://" + oidcAddr,
-			ListenAddr: oidcAddr,
+			Issuer:              "http://" + oidcAddr,
+			ListenAddr:          oidcAddr,
+			SigningAlg:          "ES256",
+			KeyRotationInterval: config.Duration(720 * time.Hour),
+			KeyOverlap:          config.Duration(24 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 5, BackoffBase: config.Duration(time.Second),

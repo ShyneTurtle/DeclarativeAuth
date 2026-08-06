@@ -42,7 +42,7 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 	// Ensure a clean slate for tables this package writes to, so tests are
 	// independent of prior runs / other test files.
 	ctx := context.Background()
-	for _, table := range []string{"credentials", "login_lockouts", "login_audit", "sessions", "password_reset_tokens", "webauthn_credentials", "webauthn_ceremonies", "user_mfa_settings", "mfa_email_challenges"} {
+	for _, table := range []string{"credentials", "login_lockouts", "login_audit", "sessions", "password_reset_tokens", "webauthn_credentials", "webauthn_ceremonies", "user_mfa_settings", "mfa_email_challenges", "oidc_authorization_codes", "oidc_signing_keys"} {
 		if _, err := pool.Exec(ctx, "DELETE FROM "+table); err != nil {
 			t.Fatalf("cleaning %s: %v", table, err)
 		}
@@ -91,6 +91,25 @@ func seedPassword(t *testing.T, pool *pgxpool.Pool, username, password string) {
 
 func testLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// waitForTCP polls addr until a connection succeeds or timeout elapses,
+// failing the test otherwise. Needed instead of a fixed sleep after starting
+// a server goroutine because startup latency varies -- e.g. RS256 key
+// generation is measurably slower than ES256 under an emulated/virtualized
+// CPU, and a fixed short sleep would flake intermittently.
+func waitForTCP(t *testing.T, addr string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s to accept connections", addr)
 }
 
 func freePort(t *testing.T) string {

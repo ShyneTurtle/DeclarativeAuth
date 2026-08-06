@@ -156,6 +156,17 @@ type OIDCConfig struct {
 	ListenAddr       string // plaintext HTTP, optional
 	SecureListenAddr string // HTTPS (TLS-terminating), optional
 	TLS              TLSListenerConfig
+	// SigningAlg is the JWT algorithm ("ES256" or "RS256") used for newly
+	// minted signing keys -- see EnvOIDCSigningAlg. Changing it doesn't
+	// invalidate existing keys: they stay in the active set (and thus in
+	// JWKS/verification) until their own retirement overlap elapses.
+	SigningAlg string
+	// KeyRotationInterval is how long a signing key is used before a new one
+	// is generated to replace it. KeyOverlap is how long a retired key stays
+	// published/accepted for verification afterward, so tokens it already
+	// signed keep validating. See EnvOIDCKeyRotationInterval/EnvOIDCKeyOverlap.
+	KeyRotationInterval Duration
+	KeyOverlap          Duration
 }
 
 type TLSConfig struct {

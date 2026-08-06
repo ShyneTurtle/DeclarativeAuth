@@ -43,6 +43,14 @@ const (
 	EnvOIDCSecureListenAddr = "DECLARATIVEAUTH_OIDC_SECURE_LISTEN_ADDR"
 	EnvOIDCTLSCert          = "DECLARATIVEAUTH_OIDC_TLS_CERT_FILE"
 	EnvOIDCTLSKey           = "DECLARATIVEAUTH_OIDC_TLS_KEY_FILE"
+	// EnvOIDCSigningAlg picks the JWT algorithm for newly minted signing
+	// keys: "ES256" (default) or "RS256". Existing keys keep working under
+	// their original algorithm until retired -- see OIDCConfig.SigningAlg.
+	EnvOIDCSigningAlg = "DECLARATIVEAUTH_OIDC_SIGNING_ALG"
+	// EnvOIDCKeyRotationInterval and EnvOIDCKeyOverlap default to 720h (30
+	// days) and 24h respectively -- see OIDCConfig.KeyRotationInterval.
+	EnvOIDCKeyRotationInterval = "DECLARATIVEAUTH_OIDC_KEY_ROTATION_INTERVAL"
+	EnvOIDCKeyOverlap          = "DECLARATIVEAUTH_OIDC_KEY_OVERLAP"
 
 	EnvSMTPHost               = "DECLARATIVEAUTH_SMTP_HOST"
 	EnvSMTPPort               = "DECLARATIVEAUTH_SMTP_PORT"
@@ -134,6 +142,7 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 				CertFile: os.Getenv(EnvOIDCTLSCert),
 				KeyFile:  os.Getenv(EnvOIDCTLSKey),
 			},
+			SigningAlg: getenv(EnvOIDCSigningAlg, "ES256"),
 		},
 		SMTP: SMTPConfig{
 			Host:       os.Getenv(EnvSMTPHost),
@@ -174,6 +183,15 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 		return nil, err
 	}
 	if cfg.LDAP.RequireTLS, err = getenvBool(EnvLDAPRequireTLS, true); err != nil {
+		return nil, err
+	}
+	if cfg.OIDC.SigningAlg != "ES256" && cfg.OIDC.SigningAlg != "RS256" {
+		return nil, fmt.Errorf("%s: unsupported signing algorithm %q (must be ES256 or RS256)", EnvOIDCSigningAlg, cfg.OIDC.SigningAlg)
+	}
+	if cfg.OIDC.KeyRotationInterval, err = getenvDuration(EnvOIDCKeyRotationInterval, 720*time.Hour); err != nil {
+		return nil, err
+	}
+	if cfg.OIDC.KeyOverlap, err = getenvDuration(EnvOIDCKeyOverlap, 24*time.Hour); err != nil {
 		return nil, err
 	}
 	if cfg.SMTP.Port, err = getenvInt(EnvSMTPPort, 0); err != nil {

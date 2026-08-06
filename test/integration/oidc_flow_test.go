@@ -23,6 +23,11 @@ import (
 
 func startFullServer(t *testing.T) (issuer string, holder *config.SnapshotHolder) {
 	t.Helper()
+	return startFullServerWithSigningAlg(t, "ES256")
+}
+
+func startFullServerWithSigningAlg(t *testing.T, alg string) (issuer string, holder *config.SnapshotHolder) {
+	t.Helper()
 	pool := setupPool(t)
 	_ = pool
 
@@ -33,8 +38,11 @@ func startFullServer(t *testing.T) (issuer string, holder *config.SnapshotHolder
 		Database: config.DatabaseConfig{DSN: testDSN(t), MaxConns: 5},
 		LDAP:     config.LDAPConfig{ListenAddr: ldapAddr, BaseDN: "dc=example,dc=com"},
 		OIDC: config.OIDCConfig{
-			Issuer:     "http://" + oidcAddr,
-			ListenAddr: oidcAddr,
+			Issuer:              "http://" + oidcAddr,
+			ListenAddr:          oidcAddr,
+			SigningAlg:          alg,
+			KeyRotationInterval: config.Duration(720 * time.Hour),
+			KeyOverlap:          config.Duration(24 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 5, BackoffBase: config.Duration(time.Second),
@@ -62,7 +70,7 @@ func startFullServer(t *testing.T) (issuer string, holder *config.SnapshotHolder
 	go func() {
 		_ = server.Run(ctx, cfg, holder, pgxPool, testLogger(), metrics.New())
 	}()
-	time.Sleep(200 * time.Millisecond) // let listeners bind
+	waitForTCP(t, oidcAddr, 10*time.Second)
 
 	return "http://" + oidcAddr, holder
 }
@@ -152,6 +160,9 @@ func TestOIDC_FullAuthorizationCodeFlowWithPKCE(t *testing.T) {
 	state := cbURL.Query().Get("state")
 	if code == "" || state != "xyz" {
 		t.Fatalf("expected code and matching state, got code=%q state=%q", code, state)
+	}
+	if got := cbURL.Query().Get("iss"); got != issuer {
+		t.Fatalf("expected RFC 9207 iss=%q on the authorization response, got %q", issuer, got)
 	}
 
 	// Step 5: exchange code for tokens
@@ -397,5 +408,138 @@ func TestOIDC_TokenEndpointAcceptsHTTPBasicClientAuth(t *testing.T) {
 	}
 	if body["access_token"] == "" || body["access_token"] == nil {
 		t.Fatalf("expected access_token, got %v", body)
+	}
+}
+
+// TestOIDC_RS256SigningAlgorithm proves DECLARATIVEAUTH_OIDC_SIGNING_ALG=RS256
+// actually changes what's signed and published, not just what's configured:
+// the ID token header carries alg=RS256, and its kid resolves to an RSA
+// (kty=RSA) key in the JWKS.
+func TestOIDC_RS256SigningAlgorithm(t *testing.T) {
+	issuer, _ := startFullServerWithSigningAlg(t, "RS256")
+
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	verifier := "test-code-verifier-1234567890-1234567890"
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+
+	authorizeURL := issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"},
+	}.Encode()
+
+	resp, err := client.Get(authorizeURL)
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, err = client.Get(issuer + loc)
+	if err != nil {
+		t.Fatalf("get login: %v", err)
+	}
+	resp.Body.Close()
+	loginURL, _ := url.Parse(issuer + loc)
+	var csrfToken string
+	for _, c := range jar.Cookies(loginURL) {
+		if c.Name == "da_csrf" {
+			csrfToken = c.Value
+		}
+	}
+	returnTo := loginURL.Query().Get("return_to")
+	resp, err = client.PostForm(issuer+"/login", url.Values{
+		"username": {"jsmith"}, "password": {"Secret123!"}, "csrf_token": {csrfToken}, "return_to": {returnTo},
+	})
+	if err != nil {
+		t.Fatalf("post login: %v", err)
+	}
+	loc = resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, err = client.Get(issuer + loc)
+	if err != nil {
+		t.Fatalf("get authorize (2nd): %v", err)
+	}
+	finalLoc := resp.Header.Get("Location")
+	resp.Body.Close()
+	cbURL, _ := url.Parse(finalLoc)
+	code := cbURL.Query().Get("code")
+	if code == "" {
+		t.Fatalf("expected an auth code, got redirect %q", finalLoc)
+	}
+
+	tokenResp, err := client.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"authorization_code"}, "code": {code}, "code_verifier": {verifier},
+		"client_id": {"example-client"}, "redirect_uri": {"http://localhost:9000/callback"},
+	})
+	if err != nil {
+		t.Fatalf("post token: %v", err)
+	}
+	defer tokenResp.Body.Close()
+	var tokenBody map[string]any
+	if err := json.NewDecoder(tokenResp.Body).Decode(&tokenBody); err != nil {
+		t.Fatalf("decode token response: %v", err)
+	}
+	idToken, _ := tokenBody["id_token"].(string)
+	if idToken == "" {
+		t.Fatalf("expected id_token, got %v", tokenBody)
+	}
+
+	parsedToken, _, err := jwt.NewParser().ParseUnverified(idToken, jwt.MapClaims{})
+	if err != nil {
+		t.Fatalf("parse id_token: %v", err)
+	}
+	if parsedToken.Method.Alg() != "RS256" {
+		t.Fatalf("expected id_token signed with RS256, got %s", parsedToken.Method.Alg())
+	}
+	kid, _ := parsedToken.Header["kid"].(string)
+	if kid == "" {
+		t.Fatal("expected a kid header on the id_token")
+	}
+
+	jwksResp, err := http.Get(issuer + "/.well-known/jwks.json")
+	if err != nil {
+		t.Fatalf("get jwks: %v", err)
+	}
+	defer jwksResp.Body.Close()
+	var jwks struct {
+		Keys []map[string]any `json:"keys"`
+	}
+	if err := json.NewDecoder(jwksResp.Body).Decode(&jwks); err != nil {
+		t.Fatalf("decode jwks: %v", err)
+	}
+	var found bool
+	for _, k := range jwks.Keys {
+		if k["kid"] == kid {
+			found = true
+			if k["kty"] != "RSA" {
+				t.Errorf("expected kty=RSA for the RS256 key, got %v", k["kty"])
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("id_token's kid %q not found in JWKS %v", kid, jwks.Keys)
+	}
+
+	discResp, err := http.Get(issuer + "/.well-known/openid-configuration")
+	if err != nil {
+		t.Fatalf("get discovery: %v", err)
+	}
+	defer discResp.Body.Close()
+	var disc map[string]any
+	if err := json.NewDecoder(discResp.Body).Decode(&disc); err != nil {
+		t.Fatalf("decode discovery: %v", err)
+	}
+	algs, _ := disc["id_token_signing_alg_values_supported"].([]any)
+	var advertisesRS256 bool
+	for _, a := range algs {
+		if a == "RS256" {
+			advertisesRS256 = true
+		}
+	}
+	if !advertisesRS256 {
+		t.Errorf("expected discovery to advertise RS256, got %v", algs)
 	}
 }

@@ -39,8 +39,11 @@ func newHAInstance(t *testing.T, dsn string, rpID string, rpOrigins []string) st
 		Database: config.DatabaseConfig{DSN: dsn, MaxConns: 5},
 		LDAP:     config.LDAPConfig{ListenAddr: ldapAddr, BaseDN: "dc=example,dc=com"},
 		OIDC: config.OIDCConfig{
-			Issuer:     "http://" + oidcAddr,
-			ListenAddr: oidcAddr,
+			Issuer:              "http://" + oidcAddr,
+			ListenAddr:          oidcAddr,
+			SigningAlg:          "ES256",
+			KeyRotationInterval: config.Duration(720 * time.Hour),
+			KeyOverlap:          config.Duration(24 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 3, BackoffBase: config.Duration(200 * time.Millisecond),
@@ -351,8 +354,11 @@ func startHAInstanceAt(t *testing.T, dsn, oidcAddr, rpID string, rpOrigins []str
 		Database: config.DatabaseConfig{DSN: dsn, MaxConns: 5},
 		LDAP:     config.LDAPConfig{ListenAddr: ldapAddr, BaseDN: "dc=example,dc=com"},
 		OIDC: config.OIDCConfig{
-			Issuer:     "http://" + oidcAddr,
-			ListenAddr: oidcAddr,
+			Issuer:              "http://" + oidcAddr,
+			ListenAddr:          oidcAddr,
+			SigningAlg:          "ES256",
+			KeyRotationInterval: config.Duration(720 * time.Hour),
+			KeyOverlap:          config.Duration(24 * time.Hour),
 		},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 3, BackoffBase: config.Duration(200 * time.Millisecond),

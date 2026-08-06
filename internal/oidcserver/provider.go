@@ -1,16 +1,19 @@
 package oidcserver
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/url"
 	"time"
 
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/identity"
+	"declarativeauth/internal/store"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -21,21 +24,29 @@ import (
 // hot-reload the same way users.yaml/groups.yaml already do.
 type Provider struct {
 	Issuer      string
-	Keys        *KeySet
-	Codes       *CodeStore
+	Keys        *KeyStore
+	Codes       *store.OIDCCodeStore
 	Snapshot    func() *identity.Snapshot
 	CurrentUser func(r *http.Request) (string, bool)
 }
 
 // NewProvider builds a Provider from server config.
-func NewProvider(cfg *config.ServerConfig, keys *KeySet, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool)) *Provider {
+func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool)) *Provider {
 	return &Provider{
 		Issuer:      cfg.OIDC.Issuer,
 		Keys:        keys,
-		Codes:       NewCodeStore(),
+		Codes:       codes,
 		Snapshot:    snapshot,
 		CurrentUser: currentUser,
 	}
+}
+
+func randomToken(n int) (string, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
 // NewMux builds the http.ServeMux for the OIDC provider surface.
@@ -58,7 +69,7 @@ func (p *Provider) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"jwks_uri":                              p.Issuer + "/.well-known/jwks.json",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
-		"id_token_signing_alg_values_supported": []string{"ES256"},
+		"id_token_signing_alg_values_supported": p.Keys.SupportedAlgorithms(),
 		"scopes_supported":                      []string{"openid", "profile", "email", "groups"},
 		"token_endpoint_auth_methods_supported": []string{"none", "client_secret_post", "client_secret_basic"},
 		"code_challenge_methods_supported":      []string{"S256"},
@@ -67,7 +78,12 @@ func (p *Provider) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 }
 
 func (p *Provider) handleJWKS(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, map[string]any{"keys": []any{p.Keys.JWK()}})
+	keys, err := p.Keys.JWKS()
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{"keys": keys})
 }
 
 func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
@@ -87,11 +103,11 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if responseType != "code" {
-		redirectError(w, r, redirectURI, state, "unsupported_response_type")
+		p.redirectError(w, r, redirectURI, state, "unsupported_response_type")
 		return
 	}
 	if client.Public && (codeChallenge == "" || codeChallengeMethod != "S256") {
-		redirectError(w, r, redirectURI, state, "invalid_request")
+		p.redirectError(w, r, redirectURI, state, "invalid_request")
 		return
 	}
 
@@ -102,11 +118,17 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	code, err := p.Codes.Issue(AuthCode{
-		ClientID: clientID, Username: username, RedirectURI: redirectURI, Scope: scope,
-		Nonce: nonce, CodeChallenge: codeChallenge, CodeChallengeMethod: codeChallengeMethod,
-	})
+	code, err := randomToken(32)
 	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	ac := store.OIDCAuthCode{
+		Code: code, ClientID: clientID, Username: username, RedirectURI: redirectURI, Scope: scope,
+		Nonce: nonce, CodeChallenge: codeChallenge, CodeChallengeMethod: codeChallengeMethod,
+		ExpiresAt: time.Now().Add(2 * time.Minute),
+	}
+	if err := p.Codes.Insert(r.Context(), ac); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
@@ -114,6 +136,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	dest, _ := url.Parse(redirectURI)
 	qs := dest.Query()
 	qs.Set("code", code)
+	qs.Set("iss", p.Issuer) // RFC 9207: lets the RP detect mix-up attacks across issuers
 	if state != "" {
 		qs.Set("state", state)
 	}
@@ -121,7 +144,7 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, dest.String(), http.StatusSeeOther)
 }
 
-func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, errCode string) {
+func (p *Provider) redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, errCode string) {
 	dest, err := url.Parse(redirectURI)
 	if err != nil {
 		http.Error(w, errCode, http.StatusBadRequest)
@@ -129,6 +152,7 @@ func redirectError(w http.ResponseWriter, r *http.Request, redirectURI, state, e
 	}
 	qs := dest.Query()
 	qs.Set("error", errCode)
+	qs.Set("iss", p.Issuer)
 	if state != "" {
 		qs.Set("state", state)
 	}
@@ -174,8 +198,8 @@ func (p *Provider) handleToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ac := p.Codes.Redeem(code)
-	if ac == nil || ac.ClientID != clientID {
+	ac, err := p.Codes.Redeem(r.Context(), code)
+	if err != nil || ac.ClientID != clientID {
 		writeTokenError(w, http.StatusBadRequest, "invalid_grant")
 		return
 	}
@@ -247,9 +271,10 @@ func writeTokenClientAuthError(w http.ResponseWriter, errCode string) {
 }
 
 func (p *Provider) sign(claims jwt.MapClaims) (string, error) {
-	token := jwt.NewWithClaims(jwt.SigningMethodES256, claims)
-	token.Header["kid"] = p.Keys.Kid
-	return token.SignedString(p.Keys.PrivateKey)
+	key := p.Keys.Current()
+	token := jwt.NewWithClaims(key.SigningMethod(), claims)
+	token.Header["kid"] = key.Kid
+	return token.SignedString(key.Signer)
 }
 
 func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
@@ -262,8 +287,13 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	raw := authz[len(prefix):]
 
 	token, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {
-		return &p.Keys.PrivateKey.PublicKey, nil
-	}, jwt.WithValidMethods([]string{"ES256"}))
+		kid, _ := t.Header["kid"].(string)
+		key, ok := p.Keys.Lookup(r.Context(), kid)
+		if !ok {
+			return nil, fmt.Errorf("unknown key id %q", kid)
+		}
+		return key.Signer.Public(), nil
+	}, jwt.WithValidMethods([]string{"ES256", "RS256"}))
 	if err != nil || !token.Valid {
 		unauthorizedUserinfo(w, "invalid_token")
 		return
