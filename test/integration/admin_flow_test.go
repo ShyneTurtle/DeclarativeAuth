@@ -49,7 +49,7 @@ func startAdminServer(t *testing.T, configEditorEnabled bool) (issuer string, id
 			KeyOverlap:          config.Duration(24 * time.Hour),
 			RefreshTokenTTL:     config.Duration(720 * time.Hour),
 		},
-		SMTP:     config.SMTPConfig{Host: "mailcatcher", Port: 1025, From: "DeclarativeAuth <test@example.com>"},
+		SMTP: config.SMTPConfig{Host: "mailcatcher", Port: 1025, From: "DeclarativeAuth <test@example.com>"},
 		RateLimit: config.RateLimitConfig{
 			Threshold: 5, BackoffBase: config.Duration(time.Second),
 			BackoffMax: config.Duration(15 * time.Minute), Window: config.Duration(24 * time.Hour),
