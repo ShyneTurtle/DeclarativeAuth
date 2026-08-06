@@ -42,7 +42,7 @@ func setupPool(t *testing.T) *pgxpool.Pool {
 	// Ensure a clean slate for tables this package writes to, so tests are
 	// independent of prior runs / other test files.
 	ctx := context.Background()
-	for _, table := range []string{"credentials", "login_lockouts", "login_audit", "sessions", "password_reset_tokens", "webauthn_credentials", "webauthn_ceremonies", "user_mfa_settings", "mfa_email_challenges", "oidc_authorization_codes", "oidc_signing_keys"} {
+	for _, table := range []string{"credentials", "login_lockouts", "login_audit", "sessions", "password_reset_tokens", "webauthn_credentials", "webauthn_ceremonies", "user_mfa_settings", "mfa_email_challenges", "oidc_authorization_codes", "oidc_signing_keys", "oidc_revoked_tokens"} {
 		if _, err := pool.Exec(ctx, "DELETE FROM "+table); err != nil {
 			t.Fatalf("cleaning %s: %v", table, err)
 		}

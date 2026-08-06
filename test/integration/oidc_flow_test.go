@@ -759,3 +759,164 @@ func TestOIDC_ClientCredentialsGrant_RejectsPublicClient(t *testing.T) {
 		t.Fatalf("expected unauthorized_client, got %v", body)
 	}
 }
+
+func TestOIDC_Introspect_ActiveAccessToken(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	body := obtainTokenBody(t, issuer, client)
+	accessToken, _ := body["access_token"].(string)
+
+	resp, err := http.PostForm(issuer+"/introspect", url.Values{"token": {accessToken}, "client_id": {"example-client"}})
+	if err != nil {
+		t.Fatalf("post introspect: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["active"] != true {
+		t.Fatalf("expected active=true, got %v", out)
+	}
+	if out["sub"] != "jsmith" {
+		t.Fatalf("expected sub=jsmith, got %v", out["sub"])
+	}
+}
+
+func TestOIDC_Introspect_RefreshToken(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	body := obtainTokenBody(t, issuer, client)
+	refreshToken, _ := body["refresh_token"].(string)
+
+	resp, err := http.PostForm(issuer+"/introspect", url.Values{"token": {refreshToken}, "client_id": {"example-client"}})
+	if err != nil {
+		t.Fatalf("post introspect: %v", err)
+	}
+	defer resp.Body.Close()
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["active"] != true || out["token_type"] != "refresh_token" {
+		t.Fatalf("expected an active refresh_token, got %v", out)
+	}
+}
+
+func TestOIDC_Introspect_InvalidTokenReturns200Inactive(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	resp, err := http.PostForm(issuer+"/introspect", url.Values{"token": {"not-a-real-token"}, "client_id": {"example-client"}})
+	if err != nil {
+		t.Fatalf("post introspect: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 per RFC 7662 §2.2 even for a garbage token, got %d", resp.StatusCode)
+	}
+	var out map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if out["active"] != false {
+		t.Fatalf("expected active=false, got %v", out)
+	}
+}
+
+func TestOIDC_Revoke_AccessTokenBlocksUserinfo(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	body := obtainTokenBody(t, issuer, client)
+	accessToken, _ := body["access_token"].(string)
+
+	req, _ := http.NewRequest(http.MethodGet, issuer+"/userinfo", nil)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("userinfo before revoke: %v", err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected userinfo to work before revocation, got %d", resp.StatusCode)
+	}
+
+	revokeResp, err := http.PostForm(issuer+"/revoke", url.Values{"token": {accessToken}, "client_id": {"example-client"}})
+	if err != nil {
+		t.Fatalf("post revoke: %v", err)
+	}
+	revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from revoke, got %d", revokeResp.StatusCode)
+	}
+
+	req2, _ := http.NewRequest(http.MethodGet, issuer+"/userinfo", nil)
+	req2.Header.Set("Authorization", "Bearer "+accessToken)
+	resp2, err := http.DefaultClient.Do(req2)
+	if err != nil {
+		t.Fatalf("userinfo after revoke: %v", err)
+	}
+	defer resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 from userinfo after revocation, got %d", resp2.StatusCode)
+	}
+}
+
+func TestOIDC_Revoke_RefreshTokenBlocksFutureRefresh(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	body := obtainTokenBody(t, issuer, client)
+	refreshToken, _ := body["refresh_token"].(string)
+
+	revokeResp, err := http.PostForm(issuer+"/revoke", url.Values{"token": {refreshToken}, "client_id": {"example-client"}})
+	if err != nil {
+		t.Fatalf("post revoke: %v", err)
+	}
+	revokeResp.Body.Close()
+	if revokeResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from revoke, got %d", revokeResp.StatusCode)
+	}
+
+	refreshResp, err := http.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"refresh_token"}, "refresh_token": {refreshToken}, "client_id": {"example-client"},
+	})
+	if err != nil {
+		t.Fatalf("post refresh: %v", err)
+	}
+	defer refreshResp.Body.Close()
+	if refreshResp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400 refreshing a revoked refresh token, got %d", refreshResp.StatusCode)
+	}
+}
+
+func TestOIDC_Revoke_GarbageTokenStillReturns200(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	resp, err := http.PostForm(issuer+"/revoke", url.Values{"token": {"not-a-real-token"}, "client_id": {"example-client"}})
+	if err != nil {
+		t.Fatalf("post revoke: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 per RFC 7009 §2.2 even for an unrecognized token, got %d", resp.StatusCode)
+	}
+}
+
+func TestOIDC_Revoke_RequiresClientAuth(t *testing.T) {
+	issuer, _ := startFullServer(t)
+
+	resp, err := http.PostForm(issuer+"/revoke", url.Values{"token": {"whatever"}, "client_id": {"no-such-client"}})
+	if err != nil {
+		t.Fatalf("post revoke: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("expected 401 for an unknown client_id, got %d", resp.StatusCode)
+	}
+}

@@ -195,9 +195,10 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			return fmt.Errorf("initializing OIDC signing keys: %w", err)
 		}
 		oidcCodes := &store.OIDCCodeStore{Pool: pool}
-		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, holder.Get, sessions.CurrentUser, logger)
+		oidcRevocations := &store.RevokedTokenStore{Pool: pool}
+		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, oidcRevocations, holder.Get, sessions.CurrentUser, logger)
 		g.Go(func() error {
-			return maintainOIDCState(gctx, oidcKeys, oidcCodes, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
+			return maintainOIDCState(gctx, oidcKeys, oidcCodes, oidcRevocations, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
 		})
 		mfaSettings := &store.UserMFASettingsStore{Pool: pool}
 		mfaChallenges := &store.EmailChallengeStore{Pool: pool}
@@ -328,6 +329,8 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		mux.Handle("/authorize", oidcMux)
 		mux.Handle("/token", oidcMux)
 		mux.Handle("/userinfo", oidcMux)
+		mux.Handle("/revoke", oidcMux)
+		mux.Handle("/introspect", oidcMux)
 		mux.HandleFunc("/healthz", healthzHandler)
 		mux.HandleFunc("/readyz", readyzHandler(pool))
 
@@ -420,7 +423,7 @@ func serveHTTPUntilDone(ctx context.Context, srv *http.Server, useTLS bool, logg
 // locking), refreshing this replica's local key cache either way so a
 // rotation performed by another replica is picked up promptly, and sweeps
 // expired authorization codes so the table doesn't grow unbounded.
-func maintainOIDCState(ctx context.Context, keys *oidcserver.KeyStore, codes *store.OIDCCodeStore, algorithm string, rotationInterval, overlap time.Duration, logger *slog.Logger) error {
+func maintainOIDCState(ctx context.Context, keys *oidcserver.KeyStore, codes *store.OIDCCodeStore, revocations *store.RevokedTokenStore, algorithm string, rotationInterval, overlap time.Duration, logger *slog.Logger) error {
 	ticker := time.NewTicker(5 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -435,6 +438,9 @@ func maintainOIDCState(ctx context.Context, keys *oidcserver.KeyStore, codes *st
 			}
 			if _, err := codes.DeleteExpired(ctx); err != nil {
 				logger.Error("oidc authorization code cleanup failed", "component", "oidcserver", "error", err)
+			}
+			if _, err := revocations.DeleteExpired(ctx); err != nil {
+				logger.Error("oidc revoked token cleanup failed", "component", "oidcserver", "error", err)
 			}
 		}
 	}

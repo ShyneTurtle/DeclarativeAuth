@@ -32,6 +32,7 @@ type Provider struct {
 	Keys            *KeyStore
 	Codes           *store.OIDCCodeStore
 	Sessions        *store.SessionStore
+	Revocations     *store.RevokedTokenStore
 	RefreshTokenTTL time.Duration
 	Snapshot        func() *identity.Snapshot
 	CurrentUser     func(r *http.Request) (string, bool)
@@ -39,12 +40,13 @@ type Provider struct {
 }
 
 // NewProvider builds a Provider from server config.
-func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool), logger *slog.Logger) *Provider {
+func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, revocations *store.RevokedTokenStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool), logger *slog.Logger) *Provider {
 	return &Provider{
 		Issuer:          cfg.OIDC.Issuer,
 		Keys:            keys,
 		Codes:           codes,
 		Sessions:        sessions,
+		Revocations:     revocations,
 		RefreshTokenTTL: cfg.OIDC.RefreshTokenTTL.Std(),
 		Snapshot:        snapshot,
 		CurrentUser:     currentUser,
@@ -73,6 +75,8 @@ func (p *Provider) NewMux() *http.ServeMux {
 	mux.HandleFunc("/authorize", p.handleAuthorize)
 	mux.HandleFunc("/token", p.handleToken)
 	mux.HandleFunc("/userinfo", p.handleUserinfo)
+	mux.HandleFunc("/revoke", p.handleRevoke)
+	mux.HandleFunc("/introspect", p.handleIntrospect)
 	return mux
 }
 
@@ -83,6 +87,8 @@ func (p *Provider) handleDiscovery(w http.ResponseWriter, r *http.Request) {
 		"token_endpoint":                        p.Issuer + "/token",
 		"userinfo_endpoint":                     p.Issuer + "/userinfo",
 		"jwks_uri":                              p.Issuer + "/.well-known/jwks.json",
+		"revocation_endpoint":                   p.Issuer + "/revoke",
+		"introspection_endpoint":                p.Issuer + "/introspect",
 		"response_types_supported":              []string{"code"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": p.Keys.SupportedAlgorithms(),
@@ -341,9 +347,14 @@ func (p *Provider) handleClientCredentialsGrant(w http.ResponseWriter, r *http.R
 	}
 
 	scope := r.FormValue("scope")
+	jti, err := randomToken(16)
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
 	now := time.Now()
 	accessToken, err := p.sign(jwt.MapClaims{
-		"iss": p.Issuer, "sub": clientID, "aud": clientID, "scope": scope,
+		"iss": p.Issuer, "sub": clientID, "aud": clientID, "scope": scope, "jti": jti,
 		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
 	})
 	if err != nil {
@@ -360,11 +371,19 @@ func (p *Provider) handleClientCredentialsGrant(w http.ResponseWriter, r *http.R
 }
 
 // issueTokens signs a fresh ID token + access token pair for username/scope.
+// Each gets its own random jti claim, the handle /revoke and /introspect use
+// to denylist/inspect an individual token ahead of its natural expiry (see
+// store.RevokedTokenStore) -- otherwise a self-contained JWT has no
+// server-side revocation point at all.
 func (p *Provider) issueTokens(username, clientID, scope, nonce string) (idToken, accessToken string, err error) {
 	snap := p.Snapshot()
 	now := time.Now()
+	idJTI, err := randomToken(16)
+	if err != nil {
+		return "", "", err
+	}
 	idClaims := jwt.MapClaims{
-		"iss": p.Issuer, "sub": username, "aud": clientID,
+		"iss": p.Issuer, "sub": username, "aud": clientID, "jti": idJTI,
 		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
 	}
 	if nonce != "" {
@@ -380,8 +399,12 @@ func (p *Provider) issueTokens(username, clientID, scope, nonce string) (idToken
 		return "", "", err
 	}
 
+	accessJTI, err := randomToken(16)
+	if err != nil {
+		return "", "", err
+	}
 	accessClaims := jwt.MapClaims{
-		"iss": p.Issuer, "sub": username, "aud": clientID, "scope": scope,
+		"iss": p.Issuer, "sub": username, "aud": clientID, "scope": scope, "jti": accessJTI,
 		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
 	}
 	accessToken, err = p.sign(accessClaims)
@@ -431,6 +454,33 @@ func (p *Provider) sign(claims jwt.MapClaims) (string, error) {
 	return token.SignedString(key.Signer)
 }
 
+// parseAccessOrIDToken verifies raw as a JWT signed by this provider (any
+// active key/algorithm) and, if valid and not individually revoked, returns
+// its claims. Shared by /userinfo, /introspect, and /revoke.
+func (p *Provider) parseAccessOrIDToken(ctx context.Context, raw string) (jwt.MapClaims, bool) {
+	token, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {
+		kid, _ := t.Header["kid"].(string)
+		key, ok := p.Keys.Lookup(ctx, kid)
+		if !ok {
+			return nil, fmt.Errorf("unknown key id %q", kid)
+		}
+		return key.Signer.Public(), nil
+	}, jwt.WithValidMethods([]string{"ES256", "RS256"}))
+	if err != nil || !token.Valid {
+		return nil, false
+	}
+	claims, ok := token.Claims.(jwt.MapClaims)
+	if !ok {
+		return nil, false
+	}
+	if jti, _ := claims["jti"].(string); jti != "" && p.Revocations != nil {
+		if revoked, err := p.Revocations.IsRevoked(ctx, jti); err != nil || revoked {
+			return nil, false
+		}
+	}
+	return claims, true
+}
+
 func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	authz := r.Header.Get("Authorization")
 	const prefix = "Bearer "
@@ -440,19 +490,11 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 	}
 	raw := authz[len(prefix):]
 
-	token, err := jwt.Parse(raw, func(t *jwt.Token) (any, error) {
-		kid, _ := t.Header["kid"].(string)
-		key, ok := p.Keys.Lookup(r.Context(), kid)
-		if !ok {
-			return nil, fmt.Errorf("unknown key id %q", kid)
-		}
-		return key.Signer.Public(), nil
-	}, jwt.WithValidMethods([]string{"ES256", "RS256"}))
-	if err != nil || !token.Valid {
+	claims, ok := p.parseAccessOrIDToken(r.Context(), raw)
+	if !ok {
 		unauthorizedUserinfo(w, "invalid_token")
 		return
 	}
-	claims, _ := token.Claims.(jwt.MapClaims)
 	sub, _ := claims["sub"].(string)
 
 	snap := p.Snapshot()
@@ -464,6 +506,96 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 func unauthorizedUserinfo(w http.ResponseWriter, errCode string) {
 	w.Header().Set("WWW-Authenticate", `Bearer error="`+errCode+`"`)
 	w.WriteHeader(http.StatusUnauthorized)
+}
+
+// handleIntrospect implements RFC 7662: given a token (access, ID, or
+// refresh), report whether it's currently active plus a few standard
+// fields. Always 200 with {"active": false} for anything invalid/expired/
+// revoked/not-recognized -- per RFC 7662 §2.2, this endpoint never signals
+// "invalid token" via an error status, since doing so would let a client
+// distinguish "malformed" from "valid but revoked", an oracle the spec
+// deliberately avoids.
+func (p *Provider) handleIntrospect(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	if _, _, ok := p.authenticateClient(w, r); !ok {
+		return
+	}
+
+	raw := r.FormValue("token")
+	if claims, ok := p.parseAccessOrIDToken(r.Context(), raw); ok {
+		resp := map[string]any{
+			"active": true, "token_type": "Bearer",
+			"iss": claims["iss"], "sub": claims["sub"], "aud": claims["aud"],
+			"exp": claims["exp"], "iat": claims["iat"], "client_id": claims["aud"],
+		}
+		if scope, ok := claims["scope"]; ok {
+			resp["scope"] = scope
+		}
+		writeJSON(w, resp)
+		return
+	}
+
+	if sessionID, secret, ok := strings.Cut(raw, "."); ok {
+		if id, err := uuid.Parse(sessionID); err == nil {
+			if sess, err := p.Sessions.GetByID(r.Context(), id); err == nil {
+				valid := sess.RevokedAt == nil && time.Now().Before(sess.ExpiresAt) &&
+					subtle.ConstantTimeCompare([]byte(sess.RefreshTokenHash), []byte(hashToken(secret))) == 1
+				if valid {
+					writeJSON(w, map[string]any{
+						"active": true, "token_type": "refresh_token",
+						"sub": sess.Username, "client_id": sess.ClientID, "scope": sess.Scope,
+						"exp": sess.ExpiresAt.Unix(),
+					})
+					return
+				}
+			}
+		}
+	}
+
+	writeJSON(w, map[string]any{"active": false})
+}
+
+// handleRevoke implements RFC 7009. Accepts either a refresh token
+// ("<session id>.<secret>") or a self-contained access/ID token JWT.
+// Per RFC 7009 §2.2, always responds 200 regardless of whether the token
+// was found/valid/already-revoked (only a client authentication failure
+// gets a different status), so the endpoint can't be used to probe which
+// tokens are live.
+func (p *Provider) handleRevoke(w http.ResponseWriter, r *http.Request) {
+	if err := r.ParseForm(); err != nil {
+		http.Error(w, "invalid form", http.StatusBadRequest)
+		return
+	}
+	_, clientID, ok := p.authenticateClient(w, r)
+	if !ok {
+		return
+	}
+
+	raw := r.FormValue("token")
+
+	if sessionID, secret, cut := strings.Cut(raw, "."); cut {
+		if id, err := uuid.Parse(sessionID); err == nil {
+			if sess, err := p.Sessions.GetByID(r.Context(), id); err == nil &&
+				sess.ClientID == clientID &&
+				subtle.ConstantTimeCompare([]byte(sess.RefreshTokenHash), []byte(hashToken(secret))) == 1 {
+				_ = p.Sessions.Revoke(r.Context(), id)
+			}
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+	}
+
+	if claims, ok := p.parseAccessOrIDToken(r.Context(), raw); ok && claims["aud"] == clientID {
+		if jti, _ := claims["jti"].(string); jti != "" && p.Revocations != nil {
+			if expFloat, ok := claims["exp"].(float64); ok {
+				_ = p.Revocations.Revoke(r.Context(), jti, time.Unix(int64(expFloat), 0))
+			}
+		}
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 func writeJSON(w http.ResponseWriter, v any) {
