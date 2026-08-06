@@ -167,26 +167,43 @@ type loginPageData struct {
 	Error     string
 	CSRFToken string
 	ReturnTo  string
+	// Username pre-fills the username field -- set from the OIDC
+	// authorize request's login_hint, when /authorize redirected here.
+	Username string
 }
 
 func (h *Handlers) handleLogin(w http.ResponseWriter, r *http.Request) {
 	secure := h.TrustedProxies.IsForwardedHTTPS(r)
 	returnTo := sanitizeReturnTo(r.URL.Query().Get("return_to"))
 
+	// forceReauth is set when an OIDC authorize request carried
+	// prompt=login: the RP explicitly asked for fresh interactive
+	// credentials even if a session cookie is already live, so skip the
+	// usual "already logged in" shortcut below just this once. Without
+	// this, prompt=login could never actually show the form -- the
+	// shortcut would immediately bounce back to return_to before the user
+	// typed anything.
+	forceReauth := strings.Contains(r.URL.Query().Get("prompt"), "login")
+
 	// Covers the multi-tab case: another tab may have just logged this
 	// browser in (e.g. by completing a password reset) via the same
 	// shared session cookie, making this tab's still-open login form
 	// stale. Rather than let it fail confusingly, notice the now-valid
 	// session and finish the redirect it was already trying to do.
-	if _, ok := h.Sessions.CurrentUser(r); ok {
-		http.Redirect(w, r, returnTo, http.StatusSeeOther)
-		return
+	if !forceReauth {
+		if _, ok := h.Sessions.CurrentUser(r); ok {
+			http.Redirect(w, r, returnTo, http.StatusSeeOther)
+			return
+		}
 	}
 
 	switch r.Method {
 	case http.MethodGet:
 		token := IssueCSRFToken(w, r, secure)
-		render(w, loginTmpl, loginPageData{Title: "Log in", CSRFToken: token, ReturnTo: returnTo})
+		render(w, loginTmpl, loginPageData{
+			Title: "Log in", CSRFToken: token, ReturnTo: returnTo,
+			Username: r.URL.Query().Get("login_hint"),
+		})
 		return
 	case http.MethodPost:
 		h.handleLoginSubmit(w, r, secure)

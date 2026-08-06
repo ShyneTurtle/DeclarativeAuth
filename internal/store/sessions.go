@@ -22,7 +22,12 @@ type Session struct {
 	// Scope is the OIDC scope the session was granted, so a refresh can
 	// reissue an ID token with the same claims. Unused (empty) for the web
 	// login cookie.
-	Scope     string
+	Scope string
+	// IssuedAt is when the session was first created -- i.e. when the user
+	// actually authenticated. Unlike ExpiresAt, refresh token rotation
+	// doesn't touch it, so it doubles as OIDC's auth_time for max_age
+	// checks (see oidcserver.Provider.handleAuthorize).
+	IssuedAt  time.Time
 	ExpiresAt time.Time
 	UserAgent string
 	IPAddress net.IP
@@ -52,12 +57,12 @@ func (s *SessionStore) Create(ctx context.Context, sess Session) error {
 // GetByID returns the session row for id, or ErrNotFound.
 func (s *SessionStore) GetByID(ctx context.Context, id uuid.UUID) (*Session, error) {
 	row := s.Pool.QueryRow(ctx, `
-		SELECT id, username, refresh_token_hash, client_id, scope, expires_at, user_agent, revoked_at
+		SELECT id, username, refresh_token_hash, client_id, scope, issued_at, expires_at, user_agent, revoked_at
 		FROM sessions WHERE id = $1`, id)
 	var sess Session
 	var clientID *string
 	var userAgent *string
-	if err := row.Scan(&sess.ID, &sess.Username, &sess.RefreshTokenHash, &clientID, &sess.Scope, &sess.ExpiresAt, &userAgent, &sess.RevokedAt); err != nil {
+	if err := row.Scan(&sess.ID, &sess.Username, &sess.RefreshTokenHash, &clientID, &sess.Scope, &sess.IssuedAt, &sess.ExpiresAt, &userAgent, &sess.RevokedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}

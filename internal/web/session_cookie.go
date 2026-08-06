@@ -75,6 +75,18 @@ func (m *SessionManager) CurrentUser(r *http.Request) (string, bool) {
 	return sess.Username, true
 }
 
+// CurrentUserWithAuthTime is like CurrentUser but also returns when the
+// underlying session was first created -- i.e. when the user actually
+// authenticated (store.Session.IssuedAt), used by the OIDC provider to
+// honor the authorize request's max_age parameter.
+func (m *SessionManager) CurrentUserWithAuthTime(r *http.Request) (username string, authTime time.Time, ok bool) {
+	sess, _, ok := m.lookup(r)
+	if !ok {
+		return "", time.Time{}, false
+	}
+	return sess.Username, sess.IssuedAt, true
+}
+
 // Clear revokes the session and expires the cookie ("log out").
 func (m *SessionManager) Clear(w http.ResponseWriter, r *http.Request) {
 	if sess, _, ok := m.lookup(r); ok {

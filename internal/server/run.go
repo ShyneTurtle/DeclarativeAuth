@@ -199,7 +199,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		}
 		oidcCodes := &store.OIDCCodeStore{Pool: pool}
 		oidcRevocations := &store.RevokedTokenStore{Pool: pool}
-		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, oidcRevocations, holder.Get, sessions.CurrentUser, logger, oidcTokenRateLimiter, trustedProxies)
+		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, oidcRevocations, holder.Get, sessions.CurrentUserWithAuthTime, logger, oidcTokenRateLimiter, trustedProxies)
 		g.Go(func() error {
 			return maintainOIDCState(gctx, oidcKeys, oidcCodes, oidcRevocations, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
 		})

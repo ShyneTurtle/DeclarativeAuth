@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -36,8 +37,11 @@ type Provider struct {
 	Revocations     *store.RevokedTokenStore
 	RefreshTokenTTL time.Duration
 	Snapshot        func() *identity.Snapshot
-	CurrentUser     func(r *http.Request) (string, bool)
-	Logger          *slog.Logger
+	// CurrentUserWithAuthTime resolves the web session cookie on a request
+	// to a username and when that session was first created (a proxy for
+	// OIDC's auth_time), used to honor the authorize request's max_age.
+	CurrentUserWithAuthTime func(r *http.Request) (username string, authTime time.Time, ok bool)
+	Logger                  *slog.Logger
 	// RateLimiter throttles /token by client_id and source IP (nil disables
 	// throttling entirely). Shares the same persisted backoff mechanism as
 	// login/password-reset -- see auth.RateLimiter -- so client-secret
@@ -48,19 +52,19 @@ type Provider struct {
 }
 
 // NewProvider builds a Provider from server config.
-func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, revocations *store.RevokedTokenStore, snapshot func() *identity.Snapshot, currentUser func(r *http.Request) (string, bool), logger *slog.Logger, rateLimiter *auth.RateLimiter, trustedProxies *auth.TrustedProxies) *Provider {
+func NewProvider(cfg *config.ServerConfig, keys *KeyStore, codes *store.OIDCCodeStore, sessions *store.SessionStore, revocations *store.RevokedTokenStore, snapshot func() *identity.Snapshot, currentUserWithAuthTime func(r *http.Request) (string, time.Time, bool), logger *slog.Logger, rateLimiter *auth.RateLimiter, trustedProxies *auth.TrustedProxies) *Provider {
 	return &Provider{
-		Issuer:          cfg.OIDC.Issuer,
-		Keys:            keys,
-		Codes:           codes,
-		Sessions:        sessions,
-		Revocations:     revocations,
-		RefreshTokenTTL: cfg.OIDC.RefreshTokenTTL.Std(),
-		Snapshot:        snapshot,
-		CurrentUser:     currentUser,
-		Logger:          logger,
-		RateLimiter:     rateLimiter,
-		TrustedProxies:  trustedProxies,
+		Issuer:                  cfg.OIDC.Issuer,
+		Keys:                    keys,
+		Codes:                   codes,
+		Sessions:                sessions,
+		Revocations:             revocations,
+		RefreshTokenTTL:         cfg.OIDC.RefreshTokenTTL.Std(),
+		Snapshot:                snapshot,
+		CurrentUserWithAuthTime: currentUserWithAuthTime,
+		Logger:                  logger,
+		RateLimiter:             rateLimiter,
+		TrustedProxies:          trustedProxies,
 	}
 }
 
@@ -125,6 +129,18 @@ func randomToken(n int) (string, error) {
 func hashToken(raw string) string {
 	sum := sha256.Sum256([]byte(raw))
 	return hex.EncodeToString(sum[:])
+}
+
+// containsToken reports whether token appears among spaceDelimited's
+// space-separated values -- used for the "prompt" authorize parameter,
+// which OIDC Core defines as a space-delimited list (e.g. "login consent").
+func containsToken(spaceDelimited, token string) bool {
+	for _, t := range strings.Fields(spaceDelimited) {
+		if t == token {
+			return true
+		}
+	}
+	return false
 }
 
 // NewMux builds the http.ServeMux for the OIDC provider surface.
@@ -252,6 +268,14 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 	nonce := q.Get("nonce")
 	codeChallenge := q.Get("code_challenge")
 	codeChallengeMethod := q.Get("code_challenge_method")
+	prompt := q.Get("prompt")
+	loginHint := q.Get("login_hint")
+	maxAge := q.Get("max_age")
+	// acr_values is accepted (so a client sending it doesn't get an
+	// unrecognized-parameter error) but not enforced: there's only one
+	// authentication context here (password or passkey via the shared web
+	// login), no distinct ACR tiers to select between.
+	_ = q.Get("acr_values")
 
 	// redirect_uri must be present and pre-registered before we can trust it
 	// enough to redirect errors to it at all (RFC 6749 §4.1.2.1) -- an
@@ -276,9 +300,37 @@ func (p *Provider) handleAuthorize(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	username, ok := p.CurrentUser(r)
-	if !ok {
+	username, authTime, authenticated := p.CurrentUserWithAuthTime(r)
+
+	// A grace window rather than a literal "every single time": prompt=login
+	// means force fresh interactive credentials, but once the user has just
+	// done that (this same round trip: /authorize -> /login -> back here),
+	// authTime is only moments old and we must let them through -- otherwise
+	// prompt=login would redirect to /login forever, since the query string
+	// (and so prompt=login itself) round-trips via return_to.
+	needsReauth := authenticated && containsToken(prompt, "login") && time.Since(authTime) > 5*time.Second
+	if authenticated && !needsReauth && maxAge != "" {
+		if seconds, err := strconv.Atoi(maxAge); err == nil && seconds >= 0 {
+			needsReauth = time.Since(authTime) > time.Duration(seconds)*time.Second
+		}
+	}
+
+	if !authenticated || needsReauth {
+		if containsToken(prompt, "none") {
+			// OIDC Core §3.1.2.1: prompt=none means never show UI -- if we
+			// can't silently satisfy the request, fail instead of
+			// redirecting to a login page the caller explicitly said not to
+			// show.
+			p.redirectError(w, r, redirectURI, state, "login_required", "no active session satisfies the request without user interaction")
+			return
+		}
 		loginURL := "/login?return_to=" + url.QueryEscape(r.URL.RequestURI())
+		if containsToken(prompt, "login") {
+			loginURL += "&prompt=login"
+		}
+		if loginHint != "" {
+			loginURL += "&login_hint=" + url.QueryEscape(loginHint)
+		}
 		http.Redirect(w, r, loginURL, http.StatusSeeOther)
 		return
 	}
@@ -544,33 +596,21 @@ func (p *Provider) handleClientCredentialsGrant(w http.ResponseWriter, r *http.R
 }
 
 // issueTokens signs a fresh ID token + access token pair for username/scope.
-// Each gets its own random jti claim, the handle /revoke and /introspect use
-// to denylist/inspect an individual token ahead of its natural expiry (see
+// Each gets its own random jti claim, which /revoke and /introspect use to
+// denylist/inspect an individual token ahead of its natural expiry (see
 // store.RevokedTokenStore) -- otherwise a self-contained JWT has no
 // server-side revocation point at all.
+//
+// The access token is signed first so its at_hash (OIDC Core §3.1.3.6) can
+// go in the ID token: a hash of the access token that lets the RP verify
+// the two weren't mismatched/substituted in transit. Both are always
+// returned from /token in the same response here (this provider has no
+// implicit/hybrid flow, which is the only case at_hash is strictly
+// required), but including it is cheap and some conformance suites expect
+// it whenever both tokens are present.
 func (p *Provider) issueTokens(username, clientID, scope, nonce string) (idToken, accessToken string, err error) {
 	snap := p.Snapshot()
 	now := time.Now()
-	idJTI, err := randomToken(16)
-	if err != nil {
-		return "", "", err
-	}
-	idClaims := jwt.MapClaims{
-		"iss": p.Issuer, "sub": username, "aud": clientID, "jti": idJTI,
-		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
-	}
-	if nonce != "" {
-		idClaims["nonce"] = nonce
-	}
-	for k, v := range Claims(snap, username) {
-		if k != "sub" {
-			idClaims[k] = v
-		}
-	}
-	idToken, err = p.sign(idClaims)
-	if err != nil {
-		return "", "", err
-	}
 
 	accessJTI, err := randomToken(16)
 	if err != nil {
@@ -584,7 +624,37 @@ func (p *Provider) issueTokens(username, clientID, scope, nonce string) (idToken
 	if err != nil {
 		return "", "", err
 	}
+
+	idJTI, err := randomToken(16)
+	if err != nil {
+		return "", "", err
+	}
+	idClaims := jwt.MapClaims{
+		"iss": p.Issuer, "sub": username, "aud": clientID, "jti": idJTI, "at_hash": atHash(accessToken),
+		"exp": now.Add(15 * time.Minute).Unix(), "iat": now.Unix(),
+	}
+	if nonce != "" {
+		idClaims["nonce"] = nonce
+	}
+	for k, v := range Claims(snap, username, scope) {
+		if k != "sub" {
+			idClaims[k] = v
+		}
+	}
+	idToken, err = p.sign(idClaims)
+	if err != nil {
+		return "", "", err
+	}
 	return idToken, accessToken, nil
+}
+
+// atHash computes the OIDC Core §3.1.3.6 at_hash: the left half of
+// SHA-256(access_token), base64url-encoded. Both of this provider's signing
+// algorithms (ES256, RS256) specify SHA-256 (the "256" in each name), so the
+// hash function doesn't need to vary by key the way the spec allows for.
+func atHash(accessToken string) string {
+	sum := sha256.Sum256([]byte(accessToken))
+	return base64.RawURLEncoding.EncodeToString(sum[:len(sum)/2])
 }
 
 // issueRefreshToken creates a new session row (the same store backing the
@@ -669,9 +739,10 @@ func (p *Provider) handleUserinfo(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	sub, _ := claims["sub"].(string)
+	scope, _ := claims["scope"].(string)
 
 	snap := p.Snapshot()
-	writeJSON(w, Claims(snap, sub))
+	writeJSON(w, Claims(snap, sub, scope))
 }
 
 // unauthorizedUserinfo rejects a bearer token per RFC 6750 §3, which

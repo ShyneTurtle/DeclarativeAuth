@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/cookiejar"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"declarativeauth/internal/server"
 
 	"github.com/golang-jwt/jwt/v5"
+	"github.com/google/uuid"
 )
 
 func startFullServer(t *testing.T) (issuer string, holder *config.SnapshotHolder) {
@@ -1166,5 +1168,313 @@ func TestOIDC_CORS_TokenPreflightForRegisteredOrigin(t *testing.T) {
 	}
 	if resp.Header.Get("Access-Control-Allow-Methods") == "" {
 		t.Error("expected Access-Control-Allow-Methods on preflight")
+	}
+}
+
+// loginSession establishes a web login session on client (via its cookie
+// jar) without going through /authorize at all, for tests that need an
+// authenticated session as a precondition rather than as the thing under
+// test.
+func loginSession(t *testing.T, issuer string, client *http.Client) {
+	t.Helper()
+	resp, err := client.Get(issuer + "/login")
+	if err != nil {
+		t.Fatalf("get login: %v", err)
+	}
+	resp.Body.Close()
+	loginURL, _ := url.Parse(issuer + "/login")
+	var csrfToken string
+	for _, c := range client.Jar.Cookies(loginURL) {
+		if c.Name == "da_csrf" {
+			csrfToken = c.Value
+		}
+	}
+	resp, err = client.PostForm(issuer+"/login", url.Values{
+		"username": {"jsmith"}, "password": {"Secret123!"}, "csrf_token": {csrfToken}, "return_to": {""},
+	})
+	if err != nil {
+		t.Fatalf("post login: %v", err)
+	}
+	resp.Body.Close()
+}
+
+func TestOIDC_IDToken_ScopeGatesClaimsAndIncludesAtHash(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	body := obtainTokenBody(t, issuer, client) // requests scope=openid only
+	idToken, _ := body["id_token"].(string)
+
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(idToken, claims); err != nil {
+		t.Fatalf("parse id_token: %v", err)
+	}
+	for _, unwanted := range []string{"email", "groups", "name", "given_name", "family_name", "preferred_username"} {
+		if _, has := claims[unwanted]; has {
+			t.Errorf("expected no %q claim for scope=openid, got %v", unwanted, claims[unwanted])
+		}
+	}
+	if _, has := claims["at_hash"]; !has {
+		t.Error("expected an at_hash claim")
+	}
+}
+
+func TestOIDC_IDToken_ProfileEmailGroupsScopesIncludeClaims(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	verifier := "scope-gating-verifier-1234567890"
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	authorizeURL := issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid profile email groups"}, "state": {"s"},
+		"code_challenge": {challenge}, "code_challenge_method": {"S256"},
+	}.Encode()
+
+	resp, _ := client.Get(authorizeURL)
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, _ = client.Get(issuer + loc)
+	resp.Body.Close()
+	loginURL, _ := url.Parse(issuer + loc)
+	var csrfToken string
+	for _, c := range jar.Cookies(loginURL) {
+		if c.Name == "da_csrf" {
+			csrfToken = c.Value
+		}
+	}
+	returnTo := loginURL.Query().Get("return_to")
+	resp, _ = client.PostForm(issuer+"/login", url.Values{
+		"username": {"jsmith"}, "password": {"Secret123!"}, "csrf_token": {csrfToken}, "return_to": {returnTo},
+	})
+	loc = resp.Header.Get("Location")
+	resp.Body.Close()
+	resp, _ = client.Get(issuer + loc)
+	finalLoc := resp.Header.Get("Location")
+	resp.Body.Close()
+	cbURL, _ := url.Parse(finalLoc)
+	code := cbURL.Query().Get("code")
+
+	tokenResp, err := client.PostForm(issuer+"/token", url.Values{
+		"grant_type": {"authorization_code"}, "code": {code}, "code_verifier": {verifier},
+		"client_id": {"example-client"}, "redirect_uri": {"http://localhost:9000/callback"},
+	})
+	if err != nil {
+		t.Fatalf("post token: %v", err)
+	}
+	defer tokenResp.Body.Close()
+	var body map[string]any
+	if err := json.NewDecoder(tokenResp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	idToken, _ := body["id_token"].(string)
+
+	claims := jwt.MapClaims{}
+	if _, _, err := jwt.NewParser().ParseUnverified(idToken, claims); err != nil {
+		t.Fatalf("parse id_token: %v", err)
+	}
+	for _, wanted := range []string{"email", "groups", "name", "preferred_username"} {
+		if _, has := claims[wanted]; !has {
+			t.Errorf("expected a %q claim with scope=openid profile email groups", wanted)
+		}
+	}
+}
+
+func TestOIDC_Authorize_PromptNoneWithoutSessionFails(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"prompt": {"none"}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	u, err := url.Parse(loc)
+	if err != nil {
+		t.Fatalf("parse redirect location %q: %v", loc, err)
+	}
+	if u.Query().Get("error") != "login_required" {
+		t.Fatalf("expected error=login_required for prompt=none with no session, got %v", u.Query())
+	}
+}
+
+func TestOIDC_Authorize_PromptNoneWithSessionSucceeds(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	loginSession(t, issuer, client)
+
+	verifier := "prompt-none-verifier-1234567890"
+	sum := sha256.Sum256([]byte(verifier))
+	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
+	resp, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"prompt": {"none"}, "code_challenge": {challenge}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, "http://localhost:9000/callback") {
+		t.Fatalf("expected a silent redirect straight to the client redirect_uri, got %q", loc)
+	}
+	u, _ := url.Parse(loc)
+	if u.Query().Get("code") == "" {
+		t.Fatalf("expected a code, got %v", u.Query())
+	}
+}
+
+func TestOIDC_Authorize_LoginHintPrefillsUsername(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	client := &http.Client{CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+
+	resp, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"login_hint": {"jsmith"}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	loc := resp.Header.Get("Location")
+	resp.Body.Close()
+
+	loginResp, err := client.Get(issuer + loc)
+	if err != nil {
+		t.Fatalf("get login: %v", err)
+	}
+	defer loginResp.Body.Close()
+	body, err := io.ReadAll(loginResp.Body)
+	if err != nil {
+		t.Fatalf("read body: %v", err)
+	}
+	if !strings.Contains(string(body), `value="jsmith"`) {
+		t.Errorf("expected the login form to be pre-filled with login_hint, got:\n%s", body)
+	}
+}
+
+// backdateSession rewrites the caller's session cookie's issued_at directly
+// in Postgres, to simulate an old session without sleeping in the test --
+// handleAuthorize's prompt=login/max_age logic treats a *just*-created
+// session (within a grace window, see its doc comment) as already fresh
+// enough, specifically to avoid looping back to /login forever within a
+// single flow; testing "an old session gets forced to reauthenticate"
+// therefore needs a session that's actually old.
+func backdateSession(t *testing.T, issuer string, client *http.Client, ago time.Duration) {
+	t.Helper()
+	u, err := url.Parse(issuer)
+	if err != nil {
+		t.Fatalf("parse issuer: %v", err)
+	}
+	var sessionCookie string
+	for _, c := range client.Jar.Cookies(u) {
+		if c.Name == "da_session" {
+			sessionCookie = c.Value
+		}
+	}
+	if sessionCookie == "" {
+		t.Fatal("expected a da_session cookie after login")
+	}
+	sessionID, _, ok := strings.Cut(sessionCookie, ".")
+	if !ok {
+		t.Fatalf("malformed session cookie %q", sessionCookie)
+	}
+	id, err := uuid.Parse(sessionID)
+	if err != nil {
+		t.Fatalf("parse session id: %v", err)
+	}
+	pool, err := poolFor(t, testDSN(t))
+	if err != nil {
+		t.Fatalf("pool: %v", err)
+	}
+	defer pool.Close()
+	if _, err := pool.Exec(context.Background(),
+		`UPDATE sessions SET issued_at = now() - $2::interval WHERE id = $1`, id, ago.String()); err != nil {
+		t.Fatalf("backdate session: %v", err)
+	}
+}
+
+func TestOIDC_Authorize_PromptLoginForcesReauthForStaleSession(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	loginSession(t, issuer, client)
+	backdateSession(t, issuer, client, time.Hour)
+
+	resp, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"prompt": {"login"}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, "/login") {
+		t.Fatalf("expected prompt=login to force a redirect to /login for a stale session, got %q", loc)
+	}
+
+	// And the login form must actually render (not bounce straight back),
+	// since forceReauth is what makes prompt=login usable at all.
+	loginResp, err := client.Get(issuer + loc)
+	if err != nil {
+		t.Fatalf("get login: %v", err)
+	}
+	defer loginResp.Body.Close()
+	if loginResp.StatusCode != http.StatusOK {
+		t.Fatalf("expected the login form to render (200), got %d -- prompt=login must not bounce straight back", loginResp.StatusCode)
+	}
+}
+
+func TestOIDC_Authorize_MaxAgeForcesReauthForStaleSession(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	loginSession(t, issuer, client)
+	backdateSession(t, issuer, client, time.Hour)
+
+	resp, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"max_age": {"60"}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, "/login") {
+		t.Fatalf("expected max_age=60 to force reauth for a session over an hour old, got %q", loc)
+	}
+}
+
+func TestOIDC_Authorize_MaxAgeAllowsFreshSession(t *testing.T) {
+	issuer, _ := startFullServer(t)
+	jar, _ := cookiejar.New(nil)
+	client := &http.Client{Jar: jar, CheckRedirect: func(req *http.Request, via []*http.Request) error { return http.ErrUseLastResponse }}
+	loginSession(t, issuer, client)
+
+	resp, err := client.Get(issuer + "/authorize?" + url.Values{
+		"response_type": {"code"}, "client_id": {"example-client"},
+		"redirect_uri": {"http://localhost:9000/callback"}, "scope": {"openid"}, "state": {"s"},
+		"max_age": {"3600"}, "code_challenge": {"x"}, "code_challenge_method": {"S256"},
+	}.Encode())
+	if err != nil {
+		t.Fatalf("get authorize: %v", err)
+	}
+	defer resp.Body.Close()
+	loc := resp.Header.Get("Location")
+	if !strings.HasPrefix(loc, "http://localhost:9000/callback") {
+		t.Fatalf("expected max_age=3600 to accept a freshly-created session, got %q", loc)
 	}
 }
