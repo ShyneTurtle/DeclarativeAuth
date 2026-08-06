@@ -74,6 +74,11 @@ func (u User) DisplayNameOrDefault() string {
 type OIDCClient struct {
 	ClientID     string
 	RedirectURIs []string
+	// PostLogoutRedirectURIs are the URIs this client may ask to be
+	// redirected to after RP-Initiated Logout (see
+	// oidcserver.Provider.handleEndSession) -- validated by exact match,
+	// same as RedirectURIs, and for the same open-redirect reason.
+	PostLogoutRedirectURIs []string
 	// Public, when true, marks this a public client (SPA/mobile): no
 	// ClientSecret, PKCE required. When false, it's confidential and
 	// ClientSecret must be set.

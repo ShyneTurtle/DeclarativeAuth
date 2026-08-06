@@ -85,6 +85,10 @@ type OIDCClientFile struct {
 type OIDCClientSpec struct {
 	ClientID     string   `json:"clientID"`
 	RedirectURIs []string `json:"redirectURIs"`
+	// PostLogoutRedirectURIs, when set, are the URIs this client may ask to
+	// be redirected to after RP-Initiated Logout. Optional -- a client that
+	// never sends post_logout_redirect_uri doesn't need this.
+	PostLogoutRedirectURIs []string `json:"postLogoutRedirectURIs"`
 	// Public: true = public client (SPA/mobile; PKCE required, no secret).
 	// Public: false = confidential client -- ClientSecret must also be set.
 	Public       bool   `json:"public"`
@@ -156,6 +160,21 @@ type OIDCConfig struct {
 	ListenAddr       string // plaintext HTTP, optional
 	SecureListenAddr string // HTTPS (TLS-terminating), optional
 	TLS              TLSListenerConfig
+	// SigningAlg is the JWT algorithm ("ES256" or "RS256") used for newly
+	// minted signing keys -- see EnvOIDCSigningAlg. Changing it doesn't
+	// invalidate existing keys: they stay in the active set (and thus in
+	// JWKS/verification) until their own retirement overlap elapses.
+	SigningAlg string
+	// KeyRotationInterval is how long a signing key is used before a new one
+	// is generated to replace it. KeyOverlap is how long a retired key stays
+	// published/accepted for verification afterward, so tokens it already
+	// signed keep validating. See EnvOIDCKeyRotationInterval/EnvOIDCKeyOverlap.
+	KeyRotationInterval Duration
+	KeyOverlap          Duration
+	// RefreshTokenTTL is how long a refresh token (and the session backing
+	// it) stays valid, refreshed on every rotation -- see
+	// EnvOIDCRefreshTokenTTL.
+	RefreshTokenTTL Duration
 }
 
 type TLSConfig struct {

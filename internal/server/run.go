@@ -61,7 +61,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 	// login/reset attempt -- Authenticate and handleResetSubmit both
 	// already treat a nil RateLimiter as "unthrottled". When only one
 	// dimension is enabled, RateLimiter itself skips the disabled one.
-	var loginRateLimiter, resetRateLimiter *auth.RateLimiter
+	var loginRateLimiter, resetRateLimiter, oidcTokenRateLimiter *auth.RateLimiter
 	if cfg.RateLimit.Threshold > 0 || cfg.RateLimit.IPThreshold > 0 {
 		lockouts := &store.LockoutStore{Pool: pool}
 		userParams := auth.ParamsFromConfig(
@@ -81,6 +81,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		// password-reset spam and login brute-forcing don't share a budget
 		// -- see auth.RateLimiter.KeyPrefix and web.ResetHandlers.RateLimiter.
 		resetRateLimiter = &auth.RateLimiter{Lockouts: lockouts, Params: userParams, IPParams: ipParams, KeyPrefix: "reset:"}
+		// Throttles /token (client_id + source IP), namespaced the same way
+		// -- see oidcserver.Provider.RateLimiter.
+		oidcTokenRateLimiter = &auth.RateLimiter{Lockouts: lockouts, Params: userParams, IPParams: ipParams, KeyPrefix: "oidc-token:"}
 	}
 
 	sessionStore := &store.SessionStore{Pool: pool}
@@ -190,11 +193,16 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Secure:   cfg.OIDC.SecureListenAddr != "",
 			Logger:   logger,
 		}
-		keys, err := oidcserver.NewKeySet()
+		oidcKeys, err := oidcserver.NewKeyStore(gctx, pool, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std())
 		if err != nil {
-			return fmt.Errorf("generating OIDC signing key: %w", err)
+			return fmt.Errorf("initializing OIDC signing keys: %w", err)
 		}
-		provider := oidcserver.NewProvider(cfg, keys, holder.Get, sessions.CurrentUser)
+		oidcCodes := &store.OIDCCodeStore{Pool: pool}
+		oidcRevocations := &store.RevokedTokenStore{Pool: pool}
+		provider := oidcserver.NewProvider(cfg, oidcKeys, oidcCodes, sessionStore, oidcRevocations, holder.Get, sessions.CurrentUserWithAuthTime, sessions.Clear, logger, oidcTokenRateLimiter, trustedProxies)
+		g.Go(func() error {
+			return maintainOIDCState(gctx, oidcKeys, oidcCodes, oidcRevocations, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
+		})
 		mfaSettings := &store.UserMFASettingsStore{Pool: pool}
 		mfaChallenges := &store.EmailChallengeStore{Pool: pool}
 		mfaPolicy := &auth.MFAPolicy{Snapshot: holder.Get, Settings: mfaSettings}
@@ -324,6 +332,9 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		mux.Handle("/authorize", oidcMux)
 		mux.Handle("/token", oidcMux)
 		mux.Handle("/userinfo", oidcMux)
+		mux.Handle("/revoke", oidcMux)
+		mux.Handle("/introspect", oidcMux)
+		mux.Handle("/endsession", oidcMux)
 		mux.HandleFunc("/healthz", healthzHandler)
 		mux.HandleFunc("/readyz", readyzHandler(pool))
 
@@ -407,6 +418,35 @@ func serveHTTPUntilDone(ctx context.Context, srv *http.Server, useTLS bool, logg
 			return nil
 		}
 		return err
+	}
+}
+
+// maintainOIDCState runs on every replica: it checks whether the shared
+// signing key is due for rotation (safe to call concurrently -- see
+// store.OIDCKeyStore.RotateIfDue, which serializes racing replicas via row
+// locking), refreshing this replica's local key cache either way so a
+// rotation performed by another replica is picked up promptly, and sweeps
+// expired authorization codes so the table doesn't grow unbounded.
+func maintainOIDCState(ctx context.Context, keys *oidcserver.KeyStore, codes *store.OIDCCodeStore, revocations *store.RevokedTokenStore, algorithm string, rotationInterval, overlap time.Duration, logger *slog.Logger) error {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-ticker.C:
+			if rotated, err := keys.RotateIfDue(ctx, algorithm, rotationInterval, overlap); err != nil {
+				logger.Error("oidc signing key rotation failed", "component", "oidcserver", "error", err)
+			} else if rotated {
+				logger.Info("oidc signing key rotated", "component", "oidcserver")
+			}
+			if _, err := codes.DeleteExpired(ctx); err != nil {
+				logger.Error("oidc authorization code cleanup failed", "component", "oidcserver", "error", err)
+			}
+			if _, err := revocations.DeleteExpired(ctx); err != nil {
+				logger.Error("oidc revoked token cleanup failed", "component", "oidcserver", "error", err)
+			}
+		}
 	}
 }
 

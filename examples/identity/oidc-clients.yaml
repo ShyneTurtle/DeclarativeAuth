@@ -9,11 +9,13 @@
 # client_id is declared here.
 #
 # Field reference:
-#   clientID       (required) unique identifier the relying party sends as client_id.
-#   redirectURIs   (required, at least one) exact-match allowlist of callback URLs.
-#   public         (required) true = public client (SPA/mobile; PKCE required, no secret).
-#                              false = confidential client -- clientSecret must also be set.
-#   clientSecret   required when public is false; unused (and should be omitted) when public is true.
+#   clientID               (required) unique identifier the relying party sends as client_id.
+#   redirectURIs           (required, at least one) exact-match allowlist of callback URLs.
+#   postLogoutRedirectURIs (optional) exact-match allowlist for RP-Initiated Logout's
+#                          post_logout_redirect_uri; only needed if this client uses it.
+#   public                 (required) true = public client (SPA/mobile; PKCE required, no secret).
+#                                      false = confidential client -- clientSecret must also be set.
+#   clientSecret           required when public is false; unused (and should be omitted) when public is true.
 
 apiVersion: declarativeauth.io/v1
 kind: OIDCClientList
@@ -21,6 +23,8 @@ clients:
   - clientID: example-spa
     redirectURIs:
       - http://localhost:9000/callback
+    postLogoutRedirectURIs:
+      - http://localhost:9000/logged-out
     public: true
 
   - clientID: example-confidential-app

@@ -4,6 +4,8 @@ clients:
   - clientID: example-client
     redirectURIs:
       - http://localhost:9000/callback
+    postLogoutRedirectURIs:
+      - http://localhost:9000/logged-out
     public: true
   - clientID: confidential-client
     redirectURIs:

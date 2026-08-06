@@ -25,6 +25,18 @@ func TestLoadServerConfigFromEnv_Defaults(t *testing.T) {
 	if !cfg.LDAP.RequireTLS {
 		t.Error("expected RequireTLS to default true (secure by default)")
 	}
+	if cfg.OIDC.SigningAlg != "ES256" {
+		t.Errorf("expected default OIDC signing algorithm ES256, got %q", cfg.OIDC.SigningAlg)
+	}
+	if cfg.OIDC.KeyRotationInterval.Std() != 720*time.Hour {
+		t.Errorf("expected default OIDC key rotation interval 720h, got %v", cfg.OIDC.KeyRotationInterval.Std())
+	}
+	if cfg.OIDC.KeyOverlap.Std() != 24*time.Hour {
+		t.Errorf("expected default OIDC key overlap 24h, got %v", cfg.OIDC.KeyOverlap.Std())
+	}
+	if cfg.OIDC.RefreshTokenTTL.Std() != 720*time.Hour {
+		t.Errorf("expected default OIDC refresh token TTL 720h, got %v", cfg.OIDC.RefreshTokenTTL.Std())
+	}
 	if cfg.OIDC.ListenAddr != "" || cfg.OIDC.SecureListenAddr != "" {
 		t.Errorf("expected OIDC listeners unset by default: %+v", cfg.OIDC)
 	}
@@ -82,6 +94,10 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	t.Setenv(EnvLDAPAllowAnonymousBind, "true")
 	t.Setenv(EnvLDAPRequireTLS, "false")
 	t.Setenv(EnvOIDCIssuer, "https://auth.example.com")
+	t.Setenv(EnvOIDCSigningAlg, "RS256")
+	t.Setenv(EnvOIDCKeyRotationInterval, "48h")
+	t.Setenv(EnvOIDCKeyOverlap, "2h")
+	t.Setenv(EnvOIDCRefreshTokenTTL, "100h")
 	t.Setenv(EnvNetworkTrustedProxies, "10.0.0.0/8, 192.168.1.0/24")
 	t.Setenv(EnvNetworkTrustDefaultGateway, "false")
 	t.Setenv(EnvRateLimitThreshold, "10")
@@ -111,6 +127,18 @@ func TestLoadServerConfigFromEnv_Overrides(t *testing.T) {
 	}
 	if cfg.OIDC.Issuer != "https://auth.example.com" {
 		t.Errorf("unexpected OIDC issuer: %q", cfg.OIDC.Issuer)
+	}
+	if cfg.OIDC.SigningAlg != "RS256" {
+		t.Errorf("expected overridden OIDC signing algorithm RS256, got %q", cfg.OIDC.SigningAlg)
+	}
+	if cfg.OIDC.KeyRotationInterval.Std() != 48*time.Hour {
+		t.Errorf("unexpected OIDC key rotation interval: %v", cfg.OIDC.KeyRotationInterval.Std())
+	}
+	if cfg.OIDC.KeyOverlap.Std() != 2*time.Hour {
+		t.Errorf("unexpected OIDC key overlap: %v", cfg.OIDC.KeyOverlap.Std())
+	}
+	if cfg.OIDC.RefreshTokenTTL.Std() != 100*time.Hour {
+		t.Errorf("unexpected OIDC refresh token TTL: %v", cfg.OIDC.RefreshTokenTTL.Std())
 	}
 	if want := []string{"10.0.0.0/8", "192.168.1.0/24"}; len(cfg.Network.TrustedProxies) != 2 ||
 		cfg.Network.TrustedProxies[0] != want[0] || cfg.Network.TrustedProxies[1] != want[1] {
@@ -155,6 +183,8 @@ func TestLoadServerConfigFromEnv_InvalidValues(t *testing.T) {
 		{"bad int", EnvDatabaseMaxConns, "not-a-number"},
 		{"bad duration", EnvRateLimitWindow, "not-a-duration"},
 		{"bad trust-gateway bool", EnvNetworkTrustDefaultGateway, "maybe"},
+		{"bad signing algorithm", EnvOIDCSigningAlg, "HS256"},
+		{"bad key rotation interval", EnvOIDCKeyRotationInterval, "not-a-duration"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
