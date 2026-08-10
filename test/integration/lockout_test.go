@@ -26,7 +26,7 @@ func TestLockout_LocksAfterThresholdAndClearsOnSuccess(t *testing.T) {
 	authenticator := buildAuthenticator(pool, holder, params)
 
 	encoded, _ := authenticator.Hasher.Hash("Secret123!")
-	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded); err != nil {
+	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded, auth.NTHash("Secret123!")); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
 
@@ -91,7 +91,7 @@ func TestLockout_DimensionsAreIndependentlyConfigurable(t *testing.T) {
 			},
 		}
 		encoded, _ := a.Hasher.Hash("Secret123!")
-		if err := a.Credentials.Upsert(context.Background(), "jsmith", encoded); err != nil {
+		if err := a.Credentials.Upsert(context.Background(), "jsmith", encoded, auth.NTHash("Secret123!")); err != nil {
 			t.Fatalf("seed credential: %v", err)
 		}
 		return a

@@ -1,11 +1,15 @@
 package ldapserver
 
 import (
+	"context"
+	"fmt"
 	"io"
 	"sort"
 	"strings"
+	"time"
 
 	"declarativeauth/internal/identity"
+	"declarativeauth/internal/store"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
 	"github.com/go-ldap/ldap/v3"
@@ -40,6 +44,18 @@ func (sel attrSelection) includes(name string) bool {
 	if sel.all {
 		return true
 	}
+	if sel.none {
+		return false
+	}
+	return sel.names[strings.ToLower(name)]
+}
+
+// includesExplicit reports whether name was asked for by its exact name --
+// unlike includes, a "*"/empty (all) selection does NOT count. Used to gate
+// Attribute.Sensitive values: a wildcard dump of "every attribute" must
+// never surface the Samba NT hash, only a request that names it directly
+// (which is how Samba's own ldapsam backend actually asks for it).
+func (sel attrSelection) includesExplicit(name string) bool {
 	if sel.none {
 		return false
 	}
@@ -105,7 +121,27 @@ func (h *Handler) handleSearch(w io.Writer, isTLS bool, sourceIP, boundUser stri
 	}
 
 	snap := h.Snapshot()
-	entries := h.entriesFor(snap, baseObject, int(scope), startTLSAvailable)
+
+	// Only a bind authenticated as a member of the configured
+	// samba-readers group -- never anonymous, never any other user -- ever
+	// sees sambaSamAccount/sambaDomain data. Fetched once per search
+	// (not once per matched entry) and passed down.
+	var sambaCreds map[string]store.SambaCredential
+	sambaPrivileged := h.Config.SambaReadersGroup != "" && boundUser != "" && snap.IsMemberOf(boundUser, h.Config.SambaReadersGroup)
+	if sambaPrivileged && h.Credentials != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		sambaCreds, err = h.Credentials.AllSambaCredentials(ctx)
+		cancel()
+		if err != nil {
+			if h.Logger != nil {
+				h.Logger.Error("fetching samba credentials failed", "component", "ldapserver", "error", err)
+			}
+			writeResult(w, messageID, ldap.ApplicationSearchResultDone, ldap.LDAPResultOther, "", "internal error")
+			return
+		}
+	}
+
+	entries := h.entriesFor(snap, baseObject, int(scope), startTLSAvailable, sambaPrivileged, sambaCreds)
 	sort.Slice(entries, func(i, j int) bool { return entries[i].dn < entries[j].dn })
 
 	var matched []entry
@@ -136,7 +172,7 @@ func (h *Handler) handleSearch(w io.Writer, isTLS bool, sourceIP, boundUser stri
 	writeMessageWithControls(w, messageID, newLDAPResultPacket(ldap.ApplicationSearchResultDone, ldap.LDAPResultSuccess, "", ""), respControls)
 }
 
-func (h *Handler) entriesFor(snap *identity.Snapshot, baseObject string, scope int, startTLSAvailable bool) []entry {
+func (h *Handler) entriesFor(snap *identity.Snapshot, baseObject string, scope int, startTLSAvailable bool, sambaPrivileged bool, sambaCreds map[string]store.SambaCredential) []entry {
 	baseDN := h.Config.BaseDN
 
 	if baseObject == "" {
@@ -145,13 +181,20 @@ func (h *Handler) entriesFor(snap *identity.Snapshot, baseObject string, scope i
 	if dnEqualFold(baseObject, SubschemaDN) {
 		return []entry{{dn: SubschemaDN, attrs: SubschemaEntry(), forceAllAttrs: true}}
 	}
+	if sambaPrivileged && dnEqualFold(baseObject, SambaDomainDN(baseDN, h.Config.SambaDomainName)) {
+		if scope == scopeSingleLevel {
+			return nil // leaf: no children
+		}
+		return []entry{{dn: SambaDomainDN(baseDN, h.Config.SambaDomainName), attrs: SambaDomainEntry(h.Config.SambaDomainName, h.Config.SambaDomainSID)}}
+	}
 
 	if username, ok := UsernameFromLeafDN(baseDN, baseObject); ok {
 		if scope == scopeSingleLevel {
 			return nil // a user entry is a leaf: no children
 		}
 		if u, exists := snap.Users[username]; exists {
-			return []entry{{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username])}}
+			samba := h.sambaAttrsFor(username, u, sambaPrivileged, sambaCreds)
+			return []entry{{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username], samba)}}
 		}
 		return nil
 	}
@@ -165,7 +208,7 @@ func (h *Handler) entriesFor(snap *identity.Snapshot, baseObject string, scope i
 		return nil
 	}
 	if dnEqualFold(baseObject, UsersOUDN(baseDN)) {
-		return h.usersSubtree(snap, scope)
+		return h.usersSubtree(snap, scope, sambaPrivileged, sambaCreds)
 	}
 	if dnEqualFold(baseObject, GroupsOUDN(baseDN)) {
 		return h.groupsSubtree(snap, scope)
@@ -175,21 +218,28 @@ func (h *Handler) entriesFor(snap *identity.Snapshot, baseObject string, scope i
 		case scopeBaseObject:
 			return []entry{{dn: baseDN, attrs: BaseEntry(baseDN)}}
 		case scopeSingleLevel:
-			return []entry{
+			entries := []entry{
 				{dn: UsersOUDN(baseDN), attrs: OUEntry("users")},
 				{dn: GroupsOUDN(baseDN), attrs: OUEntry("groups")},
 			}
+			if sambaPrivileged {
+				entries = append(entries, entry{dn: SambaDomainDN(baseDN, h.Config.SambaDomainName), attrs: SambaDomainEntry(h.Config.SambaDomainName, h.Config.SambaDomainSID)})
+			}
+			return entries
 		case scopeWholeSubtree:
 			entries := []entry{{dn: baseDN, attrs: BaseEntry(baseDN)}}
-			entries = append(entries, h.usersSubtree(snap, scopeWholeSubtree)...)
+			entries = append(entries, h.usersSubtree(snap, scopeWholeSubtree, sambaPrivileged, sambaCreds)...)
 			entries = append(entries, h.groupsSubtree(snap, scopeWholeSubtree)...)
+			if sambaPrivileged {
+				entries = append(entries, entry{dn: SambaDomainDN(baseDN, h.Config.SambaDomainName), attrs: SambaDomainEntry(h.Config.SambaDomainName, h.Config.SambaDomainSID)})
+			}
 			return entries
 		}
 	}
 	return nil
 }
 
-func (h *Handler) usersSubtree(snap *identity.Snapshot, scope int) []entry {
+func (h *Handler) usersSubtree(snap *identity.Snapshot, scope int, sambaPrivileged bool, sambaCreds map[string]store.SambaCredential) []entry {
 	baseDN := h.Config.BaseDN
 	var entries []entry
 	if scope == scopeBaseObject || scope == scopeWholeSubtree {
@@ -199,9 +249,30 @@ func (h *Handler) usersSubtree(snap *identity.Snapshot, scope int) []entry {
 		return entries
 	}
 	for username, u := range snap.Users {
-		entries = append(entries, entry{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username])})
+		samba := h.sambaAttrsFor(username, u, sambaPrivileged, sambaCreds)
+		entries = append(entries, entry{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username], samba)})
 	}
 	return entries
+}
+
+// sambaAttrsFor builds a user's Samba attributes for a privileged search,
+// or nil if the search isn't privileged or no NT hash has been computed for
+// this user yet (never logged in / never had a password set since the
+// samba-readers-group feature was configured -- see
+// auth.Authenticator.Authenticate's lazy backfill and store.CredentialStore.Upsert).
+func (h *Handler) sambaAttrsFor(username string, u identity.User, sambaPrivileged bool, sambaCreds map[string]store.SambaCredential) *SambaUserAttrs {
+	if !sambaPrivileged {
+		return nil
+	}
+	cred, ok := sambaCreds[username]
+	if !ok {
+		return nil
+	}
+	return &SambaUserAttrs{
+		SID:     fmt.Sprintf("%s-%d", h.Config.SambaDomainSID, cred.RID),
+		NTHash:  cred.NTHash,
+		Enabled: u.Enabled,
+	}
 }
 
 func (h *Handler) groupsSubtree(snap *identity.Snapshot, scope int) []entry {
@@ -228,7 +299,11 @@ func buildSearchResultEntry(e entry, sel attrSelection, typesOnly bool) *ber.Pac
 		if len(a.Values) == 0 {
 			continue
 		}
-		if !e.forceAllAttrs && !sel.includes(a.Name) {
+		if a.Sensitive {
+			if !sel.includesExplicit(a.Name) {
+				continue
+			}
+		} else if !e.forceAllAttrs && !sel.includes(a.Name) {
 			continue
 		}
 		pa := ber.Encode(ber.ClassUniversal, ber.TypeConstructed, ber.TagSequence, nil, "PartialAttribute")

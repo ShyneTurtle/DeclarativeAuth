@@ -195,3 +195,86 @@ func TestLoadServerConfigFromEnv_InvalidValues(t *testing.T) {
 		})
 	}
 }
+
+func TestLoadServerConfigFromEnv_SambaReadersGroup_Disabled(t *testing.T) {
+	cfg, err := LoadServerConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LDAP.SambaReadersGroup != "" || cfg.LDAP.SambaDomainSID != "" || cfg.LDAP.SambaDomainName != "" {
+		t.Errorf("expected Samba integration unset by default: %+v", cfg.LDAP)
+	}
+}
+
+func TestLoadServerConfigFromEnv_SambaReadersGroup_RequiresDomainSIDAndName(t *testing.T) {
+	cases := []struct {
+		name string
+		env  map[string]string
+	}{
+		{"missing both", map[string]string{EnvLDAPSambaReadersGroup: "samba-readers"}},
+		{"missing domain name", map[string]string{
+			EnvLDAPSambaReadersGroup: "samba-readers",
+			EnvLDAPSambaDomainSID:    "S-1-5-21-1-2-3",
+		}},
+		{"missing domain SID", map[string]string{
+			EnvLDAPSambaReadersGroup: "samba-readers",
+			EnvLDAPSambaDomainName:   "WORKGROUP",
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			for k, v := range tc.env {
+				t.Setenv(k, v)
+			}
+			if _, err := LoadServerConfigFromEnv(); err == nil {
+				t.Error("expected an error when the samba-readers group is set without both companion variables")
+			}
+		})
+	}
+}
+
+func TestLoadServerConfigFromEnv_SambaDomainSID_MustLookLikeADomainSID(t *testing.T) {
+	cases := []struct {
+		name string
+		sid  string
+		ok   bool
+	}{
+		{"valid domain SID", "S-1-5-21-1004336348-1177238915-682003330", true},
+		{"missing a sub-authority", "S-1-5-21-1004336348-1177238915", false},
+		{"has a trailing RID (not a domain SID)", "S-1-5-21-1004336348-1177238915-682003330-1000", false},
+		{"not a SID at all", "not-a-sid", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(EnvLDAPSambaReadersGroup, "samba-readers")
+			t.Setenv(EnvLDAPSambaDomainSID, tc.sid)
+			t.Setenv(EnvLDAPSambaDomainName, "WORKGROUP")
+			_, err := LoadServerConfigFromEnv()
+			if tc.ok && err != nil {
+				t.Errorf("expected %q to be accepted, got error: %v", tc.sid, err)
+			}
+			if !tc.ok && err == nil {
+				t.Errorf("expected %q to be rejected as an invalid domain SID", tc.sid)
+			}
+		})
+	}
+}
+
+func TestLoadServerConfigFromEnv_SambaReadersGroup_ValidConfigLoads(t *testing.T) {
+	t.Setenv(EnvLDAPSambaReadersGroup, "samba-readers")
+	t.Setenv(EnvLDAPSambaDomainSID, "S-1-5-21-1004336348-1177238915-682003330")
+	t.Setenv(EnvLDAPSambaDomainName, "WORKGROUP")
+	cfg, err := LoadServerConfigFromEnv()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if cfg.LDAP.SambaReadersGroup != "samba-readers" {
+		t.Errorf("unexpected samba readers group: %q", cfg.LDAP.SambaReadersGroup)
+	}
+	if cfg.LDAP.SambaDomainSID != "S-1-5-21-1004336348-1177238915-682003330" {
+		t.Errorf("unexpected samba domain SID: %q", cfg.LDAP.SambaDomainSID)
+	}
+	if cfg.LDAP.SambaDomainName != "WORKGROUP" {
+		t.Errorf("unexpected samba domain name: %q", cfg.LDAP.SambaDomainName)
+	}
+}

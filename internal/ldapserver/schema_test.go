@@ -68,3 +68,81 @@ func TestOUEntry(t *testing.T) {
 		t.Fatalf("expected ou [users], got %v", got)
 	}
 }
+
+func TestUserEntry_NoSambaAttrsWhenNil(t *testing.T) {
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, nil)
+	if got := attrValues(attrs, "sambaSID"); len(got) != 0 {
+		t.Fatalf("expected no sambaSID when samba is nil, got %v", got)
+	}
+	objectClass := attrValues(attrs, "objectClass")
+	for _, oc := range objectClass {
+		if oc == "sambaSamAccount" {
+			t.Fatalf("expected no sambaSamAccount objectClass when samba is nil, got %v", objectClass)
+		}
+	}
+}
+
+func TestUserEntry_SambaAttrsPresentAndMarkedSensitive(t *testing.T) {
+	samba := &SambaUserAttrs{SID: "S-1-5-21-1-2-3-1000", NTHash: "8846F7EAEE8FB117AD06BDD830B7586C", Enabled: true}
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, samba)
+
+	objectClass := attrValues(attrs, "objectClass")
+	found := false
+	for _, oc := range objectClass {
+		if oc == "sambaSamAccount" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected sambaSamAccount objectClass, got %v", objectClass)
+	}
+	if got := attrValues(attrs, "sambaSID"); len(got) != 1 || got[0] != samba.SID {
+		t.Fatalf("expected sambaSID [%s], got %v", samba.SID, got)
+	}
+	if got := attrValues(attrs, "sambaNTPassword"); len(got) != 1 || got[0] != samba.NTHash {
+		t.Fatalf("expected sambaNTPassword [%s], got %v", samba.NTHash, got)
+	}
+	for _, a := range attrs {
+		if a.Name == "sambaSID" || a.Name == "sambaNTPassword" || a.Name == "sambaAcctFlags" {
+			if !a.Sensitive {
+				t.Fatalf("expected %s to be marked Sensitive", a.Name)
+			}
+		}
+	}
+}
+
+func TestUserEntry_NoNTPasswordAttrWhenHashNotYetComputed(t *testing.T) {
+	samba := &SambaUserAttrs{SID: "S-1-5-21-1-2-3-1000", NTHash: "", Enabled: true}
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, samba)
+	if got := attrValues(attrs, "sambaNTPassword"); len(got) != 0 {
+		t.Fatalf("expected no sambaNTPassword attribute when NTHash hasn't been computed yet, got %v", got)
+	}
+}
+
+func TestSambaAcctFlags(t *testing.T) {
+	if got := sambaAcctFlags(true); got != "[U          ]" {
+		t.Fatalf("expected enabled flags %q, got %q", "[U          ]", got)
+	}
+	if got := sambaAcctFlags(false); got != "[UD         ]" {
+		t.Fatalf("expected disabled flags %q, got %q", "[UD         ]", got)
+	}
+	for _, enabled := range []bool{true, false} {
+		got := sambaAcctFlags(enabled)
+		if len(got) != 13 { // "[" + 11 + "]"
+			t.Fatalf("expected fixed-width 13-char flags string, got %d chars: %q", len(got), got)
+		}
+	}
+}
+
+func TestSambaDomainEntry(t *testing.T) {
+	attrs := SambaDomainEntry("WORKGROUP", "S-1-5-21-1-2-3")
+	if got := attrValues(attrs, "sambaDomainName"); len(got) != 1 || got[0] != "WORKGROUP" {
+		t.Fatalf("expected sambaDomainName [WORKGROUP], got %v", got)
+	}
+	if got := attrValues(attrs, "sambaSID"); len(got) != 1 || got[0] != "S-1-5-21-1-2-3" {
+		t.Fatalf("expected sambaSID [S-1-5-21-1-2-3], got %v", got)
+	}
+	if got := attrValues(attrs, "objectClass"); len(got) != 1 || got[0] != "sambaDomain" {
+		t.Fatalf("expected objectClass [sambaDomain], got %v", got)
+	}
+}

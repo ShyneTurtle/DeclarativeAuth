@@ -68,7 +68,7 @@ func runAdminSetPassword(args []string) error {
 	}
 
 	creds := &store.CredentialStore{Pool: pool}
-	if err := creds.Upsert(ctx, *username, encoded); err != nil {
+	if err := creds.Upsert(ctx, *username, encoded, auth.NTHash(*password)); err != nil {
 		return err
 	}
 	fmt.Printf("password set for %s\n", *username)

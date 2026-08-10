@@ -302,6 +302,32 @@ Two independent layers, since neither can catch everything alone:
   substitute for actually running TLS; a network attacker who controls the
   connection can also tamper with the JavaScript itself.
 
+## Samba integration
+
+A Samba file server can use DeclarativeAuth as its account backend
+(`passdb backend = ldapsam:ldap://...`) via LDAP, so file share ACLs come
+from the same declarative users/groups everything else does. This is
+opt-in and off by default -- set `DECLARATIVEAUTH_LDAP_SAMBA_READERS_GROUP`
+to a group name, plus `DECLARATIVEAUTH_LDAP_SAMBA_DOMAIN_SID` (generate once
+with `net getlocalsid` on the Samba host, then never change it) and
+`DECLARATIVEAUTH_LDAP_SAMBA_DOMAIN_NAME` (Samba's `workgroup`). See
+`examples/.env.example`.
+
+Two things worth understanding before turning this on:
+
+- **A second, weaker credential is involved.** NTLM (what SMB actually
+  speaks on the wire) requires the server to hold an NT hash -- MD4 of the
+  password, unsalted -- not a check against Argon2id. DeclarativeAuth
+  computes and stores this alongside the Argon2id hash, but it's real 
+  password-equivalent material if leaked, unlike Argon2id.
+- **Read access to it is gated, not just present.** Only an LDAP bind
+  authenticated as a member of `DECLARATIVEAUTH_LDAP_SAMBA_READERS_GROUP`
+  can access `sambaNTPassword`, `sambaSID`, or `sambaAcctFlags`.
+
+Known limitation: A declaratively-hashed account
+(`passwordHash`/`passwordHashFile`) can never get an NT hash, so such accounts
+(typically service accounts) won't be able to authenticate to Samba shares.
+
 ## Development
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for local dev setup (a WSL/Docker dev

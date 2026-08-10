@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/ldapserver"
 	dtls "declarativeauth/internal/tls"
@@ -36,7 +37,7 @@ func startLDAPServer(t *testing.T, identityFixture string, opts ...func(*ldapser
 	if err != nil {
 		t.Fatalf("hash: %v", err)
 	}
-	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded); err != nil {
+	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded, auth.NTHash("Secret123!")); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
 

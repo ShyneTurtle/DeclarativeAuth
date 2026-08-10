@@ -10,6 +10,7 @@ import (
 
 	"declarativeauth/internal/auth"
 	"declarativeauth/internal/identity"
+	"declarativeauth/internal/store"
 
 	ber "github.com/go-asn1-ber/asn1-ber"
 	"github.com/go-ldap/ldap/v3"
@@ -22,6 +23,11 @@ type Handler struct {
 	Authenticator *auth.Authenticator
 	TrustedProxy  *auth.TrustedProxies
 	Logger        *slog.Logger
+
+	// Credentials, when Config.SambaReadersGroup is set, is consulted by a
+	// privileged search to populate sambaNTPassword/sambaSID. Unused (may
+	// be nil) otherwise.
+	Credentials *store.CredentialStore
 
 	OnBind   func(username string, success bool, sourceIP string, reason string)
 	OnSearch func(sourceIP string)

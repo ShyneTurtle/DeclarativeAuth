@@ -312,7 +312,7 @@ func (h *ResetHandlers) handleResetConfirmSubmit(w http.ResponseWriter, r *http.
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	if err := h.Creds.Upsert(ctx, result.Username, encoded); err != nil {
+	if err := h.Creds.Upsert(ctx, result.Username, encoded, auth.NTHash(password)); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

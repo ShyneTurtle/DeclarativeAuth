@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 )
 
@@ -20,7 +21,7 @@ func TestAuthenticate_EmailLogin(t *testing.T) {
 
 	authenticator := buildAuthenticator(pool, holder, defaultLockoutParams())
 	encoded, _ := authenticator.Hasher.Hash("Secret123!")
-	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded); err != nil {
+	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded, auth.NTHash("Secret123!")); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
 
@@ -54,7 +55,7 @@ func TestAuthenticate_UsernameAndEmailShareLockoutBudget(t *testing.T) {
 	params := defaultLockoutParams() // threshold=3
 	authenticator := buildAuthenticator(pool, holder, params)
 	encoded, _ := authenticator.Hasher.Hash("Secret123!")
-	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded); err != nil {
+	if err := authenticator.Credentials.Upsert(context.Background(), "jsmith", encoded, auth.NTHash("Secret123!")); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
 

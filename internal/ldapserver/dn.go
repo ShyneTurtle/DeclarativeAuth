@@ -19,6 +19,18 @@ type Config struct {
 	// listener or the plaintext listener after a successful StartTLS. It
 	// does not disable the plaintext listener itself.
 	RequireTLS bool
+	// SambaReadersGroup, SambaDomainSID, SambaDomainName: empty
+	// SambaReadersGroup (the default) disables Samba integration entirely.
+	// See config.EnvLDAPSambaReadersGroup and friends.
+	SambaReadersGroup string
+	SambaDomainSID    string
+	SambaDomainName   string
+}
+
+// SambaDomainDN returns the DN of the synthetic sambaDomain entry:
+// sambaDomainName=<name>,<baseDN>.
+func SambaDomainDN(baseDN, domainName string) string {
+	return fmt.Sprintf("sambaDomainName=%s,%s", domainName, baseDN)
 }
 
 // UserDN returns the canonical DN for a username: uid=<username>,ou=users,<baseDN>.

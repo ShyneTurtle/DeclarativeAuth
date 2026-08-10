@@ -113,10 +113,14 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				BaseDN:             cfg.LDAP.BaseDN,
 				AllowAnonymousBind: cfg.LDAP.AllowAnonymousBind,
 				RequireTLS:         cfg.LDAP.RequireTLS,
+				SambaReadersGroup:  cfg.LDAP.SambaReadersGroup,
+				SambaDomainSID:     cfg.LDAP.SambaDomainSID,
+				SambaDomainName:    cfg.LDAP.SambaDomainName,
 			},
 			Snapshot:      holder.Get,
 			Authenticator: authenticator,
 			TrustedProxy:  trustedProxies,
+			Credentials:   &store.CredentialStore{Pool: pool},
 			Logger:        logger,
 			OnBind: func(username string, success bool, sourceIP, reason string) {
 				eventType := "ldap_bind_failure"
