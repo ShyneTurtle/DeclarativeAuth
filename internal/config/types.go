@@ -148,6 +148,14 @@ type LDAPConfig struct {
 	// excepted) without touching whether the plaintext listener itself
 	// runs -- see EnvLDAPRequireTLS.
 	RequireTLS bool
+	// SambaReadersGroup, SambaDomainSID, SambaDomainName -- see
+	// EnvLDAPSambaReadersGroup/EnvLDAPSambaDomainSID/EnvLDAPSambaDomainName.
+	// SambaReadersGroup empty (the default) disables Samba integration
+	// entirely: no sambaSamAccount/sambaDomain data is ever built or
+	// exposed, regardless of what binds.
+	SambaReadersGroup string
+	SambaDomainSID    string
+	SambaDomainName   string
 }
 
 // OIDCConfig configures the OIDC/web listener(s), with the same independent

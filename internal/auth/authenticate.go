@@ -96,8 +96,10 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 	// never have had any effect anyway.
 	storedHash := user.PasswordHash
 	mustReset := false
+	var cred *store.Credential
 	if storedHash == "" {
-		cred, err := a.Credentials.Get(ctx, username)
+		var err error
+		cred, err = a.Credentials.Get(ctx, username)
 		if err != nil {
 			if errors.Is(err, store.ErrNotFound) {
 				_, _ = a.Hasher.Verify(password, a.Hasher.Dummy())
@@ -117,6 +119,18 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 	if !ok {
 		a.recordFailure(ctx, username, sourceIP)
 		return nil, &AuthError{Reason: ReasonBadPassword}
+	}
+
+	// Backfill the Samba NT hash for a Postgres-backed credential that
+	// predates it (or was never touched by a set-password/reset since):
+	// this is the only remaining point a plaintext password is available
+	// for an existing account without forcing a reset. A no-op query once
+	// nt_hash is set. Declaratively-hashed accounts (cred == nil here)
+	// never get one -- there is no plaintext to derive it from.
+	if cred != nil && cred.NTHash == "" {
+		if err := a.Credentials.SetNTHashIfMissing(ctx, username, NTHash(password)); err != nil && a.Logger != nil {
+			a.Logger.Error("failed to backfill samba NT hash", "component", "auth", "username", username, "error", err)
+		}
 	}
 
 	if a.RateLimiter != nil {

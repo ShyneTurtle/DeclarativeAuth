@@ -84,7 +84,7 @@ func seedPassword(t *testing.T, pool *pgxpool.Pool, username, password string) {
 		t.Fatalf("hash password: %v", err)
 	}
 	creds := &store.CredentialStore{Pool: pool}
-	if err := creds.Upsert(context.Background(), username, encoded); err != nil {
+	if err := creds.Upsert(context.Background(), username, encoded, auth.NTHash(password)); err != nil {
 		t.Fatalf("seed credential: %v", err)
 	}
 }

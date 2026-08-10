@@ -4,10 +4,16 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
 )
+
+// sambaDomainSIDPattern matches a Windows/Samba domain SID: "S-1-5-21-"
+// followed by exactly three sub-authority numbers identifying the domain
+// (a *domain* SID has no trailing RID -- that's appended per-user).
+var sambaDomainSIDPattern = regexp.MustCompile(`^S-1-5-21-\d+-\d+-\d+$`)
 
 // Environment variable names for every ServerConfig field. There is no
 // server config FILE -- see .env.example at the repo root for the same
@@ -35,6 +41,26 @@ const (
 	// Search are rejected over a non-TLS connection, without disabling the
 	// plaintext listener itself -- StartTLS still upgrades it in place.
 	EnvLDAPRequireTLS = "DECLARATIVEAUTH_LDAP_REQUIRE_TLS"
+	// EnvLDAPSambaReadersGroup, unset by default, opts into exposing the
+	// sambaSamAccount attributes (sambaSID, sambaNTPassword, sambaAcctFlags)
+	// needed for a Samba server's `passdb backend = ldapsam` -- and only to
+	// a bind authenticated as a member of the named declarative group, never
+	// to anonymous/unprivileged binds or via a wildcard attribute request.
+	// Requires EnvLDAPSambaDomainSID and EnvLDAPSambaDomainName to also be
+	// set. See README's Samba integration section.
+	EnvLDAPSambaReadersGroup = "DECLARATIVEAUTH_LDAP_SAMBA_READERS_GROUP"
+	// EnvLDAPSambaDomainSID is the Samba domain SID (e.g.
+	// "S-1-5-21-1234567890-1234567890-1234567890"), generated once by the
+	// operator (e.g. `net getlocalsid` on the Samba host) and set here --
+	// never generated or changed by DeclarativeAuth itself, since changing
+	// it after Samba clients rely on it invalidates every SID-based
+	// permission they hold.
+	EnvLDAPSambaDomainSID = "DECLARATIVEAUTH_LDAP_SAMBA_DOMAIN_SID"
+	// EnvLDAPSambaDomainName is the NetBIOS workgroup/domain name Samba's
+	// smb.conf declares (`workgroup = ...`), advertised in the synthetic
+	// sambaDomain LDAP entry so smbd can find it without ever needing to
+	// write one itself (identity stays read-only via LDAP).
+	EnvLDAPSambaDomainName = "DECLARATIVEAUTH_LDAP_SAMBA_DOMAIN_NAME"
 
 	// EnvOIDCListenAddr and EnvOIDCSecureListenAddr are the same independent
 	// plaintext/secure split as the LDAP pair above.
@@ -129,9 +155,12 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 			DSN: os.Getenv(EnvDatabaseDSN),
 		},
 		LDAP: LDAPConfig{
-			ListenAddr:       os.Getenv(EnvLDAPListenAddr),
-			SecureListenAddr: os.Getenv(EnvLDAPSecureListenAddr),
-			BaseDN:           os.Getenv(EnvLDAPBaseDN),
+			ListenAddr:        os.Getenv(EnvLDAPListenAddr),
+			SecureListenAddr:  os.Getenv(EnvLDAPSecureListenAddr),
+			BaseDN:            os.Getenv(EnvLDAPBaseDN),
+			SambaReadersGroup: os.Getenv(EnvLDAPSambaReadersGroup),
+			SambaDomainSID:    os.Getenv(EnvLDAPSambaDomainSID),
+			SambaDomainName:   os.Getenv(EnvLDAPSambaDomainName),
 			TLS: TLSListenerConfig{
 				CertFile: os.Getenv(EnvLDAPTLSCertFile),
 				KeyFile:  os.Getenv(EnvLDAPTLSKeyFile),
@@ -187,6 +216,14 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 	}
 	if cfg.LDAP.RequireTLS, err = getenvBool(EnvLDAPRequireTLS, true); err != nil {
 		return nil, err
+	}
+	if cfg.LDAP.SambaReadersGroup != "" {
+		if cfg.LDAP.SambaDomainSID == "" || cfg.LDAP.SambaDomainName == "" {
+			return nil, fmt.Errorf("%s requires both %s and %s to be set", EnvLDAPSambaReadersGroup, EnvLDAPSambaDomainSID, EnvLDAPSambaDomainName)
+		}
+		if !sambaDomainSIDPattern.MatchString(cfg.LDAP.SambaDomainSID) {
+			return nil, fmt.Errorf("%s: %q is not a domain SID of the form S-1-5-21-x-x-x", EnvLDAPSambaDomainSID, cfg.LDAP.SambaDomainSID)
+		}
 	}
 	if cfg.OIDC.SigningAlg != "ES256" && cfg.OIDC.SigningAlg != "RS256" {
 		return nil, fmt.Errorf("%s: unsupported signing algorithm %q (must be ES256 or RS256)", EnvOIDCSigningAlg, cfg.OIDC.SigningAlg)
