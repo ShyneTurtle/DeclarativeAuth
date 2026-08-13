@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -24,14 +25,23 @@ type Credential struct {
 	NTHash    string
 	SambaRID  int64
 	MustReset bool
+	// PasswordSetAt is when password_hash was last written. Exposed to Samba as
+	// sambaPwdLastSet (see store.SambaCredential) -- ldapsam treats a sambaSamAccount
+	// with no sambaPwdLastSet (or 0) as "password never set", which forces a
+	// "must change password" prompt on every single logon regardless of how the
+	// account was actually provisioned. Found live: every Samba login hit this,
+	// defeating the point of LDAP-backed auth, because this field was computed but
+	// never rendered into LDAP at all.
+	PasswordSetAt time.Time
 }
 
 // SambaCredential is the subset of a Credential an LDAP search privileged
 // via the samba-readers group is allowed to see: enough to populate a
 // sambaSamAccount entry, nothing else.
 type SambaCredential struct {
-	NTHash string
-	RID    int64
+	NTHash        string
+	RID           int64
+	PasswordSetAt time.Time
 }
 
 // CredentialStore provides CRUD access to the credentials table.
@@ -43,11 +53,11 @@ type CredentialStore struct {
 // has never had a password set (the bootstrap state).
 func (s *CredentialStore) Get(ctx context.Context, username string) (*Credential, error) {
 	row := s.Pool.QueryRow(ctx,
-		`SELECT username, password_hash, COALESCE(nt_hash, ''), COALESCE(samba_rid, 0), must_reset
+		`SELECT username, password_hash, COALESCE(nt_hash, ''), COALESCE(samba_rid, 0), must_reset, password_set_at
 		 FROM credentials WHERE username = $1`,
 		username)
 	var c Credential
-	if err := row.Scan(&c.Username, &c.PasswordHash, &c.NTHash, &c.SambaRID, &c.MustReset); err != nil {
+	if err := row.Scan(&c.Username, &c.PasswordHash, &c.NTHash, &c.SambaRID, &c.MustReset, &c.PasswordSetAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, ErrNotFound
 		}
@@ -100,7 +110,7 @@ func (s *CredentialStore) SetNTHashIfMissing(ctx context.Context, username, ntHa
 // keyed by username -- fetched in one round-trip per privileged LDAP
 // search rather than per matched entry.
 func (s *CredentialStore) AllSambaCredentials(ctx context.Context) (map[string]SambaCredential, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT username, nt_hash, samba_rid FROM credentials WHERE nt_hash IS NOT NULL AND samba_rid IS NOT NULL`)
+	rows, err := s.Pool.Query(ctx, `SELECT username, nt_hash, samba_rid, password_set_at FROM credentials WHERE nt_hash IS NOT NULL AND samba_rid IS NOT NULL`)
 	if err != nil {
 		return nil, err
 	}
@@ -110,10 +120,11 @@ func (s *CredentialStore) AllSambaCredentials(ctx context.Context) (map[string]S
 	for rows.Next() {
 		var username, ntHash string
 		var rid int64
-		if err := rows.Scan(&username, &ntHash, &rid); err != nil {
+		var passwordSetAt time.Time
+		if err := rows.Scan(&username, &ntHash, &rid, &passwordSetAt); err != nil {
 			return nil, err
 		}
-		out[username] = SambaCredential{NTHash: ntHash, RID: rid}
+		out[username] = SambaCredential{NTHash: ntHash, RID: rid, PasswordSetAt: passwordSetAt}
 	}
 	return out, rows.Err()
 }

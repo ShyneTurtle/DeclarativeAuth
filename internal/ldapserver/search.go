@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -269,9 +270,10 @@ func (h *Handler) sambaAttrsFor(username string, u identity.User, sambaPrivilege
 		return nil
 	}
 	return &SambaUserAttrs{
-		SID:     fmt.Sprintf("%s-%d", h.Config.SambaDomainSID, cred.RID),
-		NTHash:  cred.NTHash,
-		Enabled: u.Enabled,
+		SID:        fmt.Sprintf("%s-%d", h.Config.SambaDomainSID, cred.RID),
+		NTHash:     cred.NTHash,
+		Enabled:    u.Enabled,
+		PwdLastSet: strconv.FormatInt(cred.PasswordSetAt.Unix(), 10),
 	}
 }
 

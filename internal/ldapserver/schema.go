@@ -39,6 +39,12 @@ type SambaUserAttrs struct {
 	SID     string
 	NTHash  string
 	Enabled bool
+	// PwdLastSet is store.SambaCredential.PasswordSetAt as Unix seconds, rendered as
+	// sambaPwdLastSet. Required, not cosmetic: ldapsam treats a sambaSamAccount with
+	// no sambaPwdLastSet (or "0") as "password never set" and forces a "must change
+	// password" prompt on every logon -- found live, blocking every Samba login
+	// regardless of how the account was actually provisioned.
+	PwdLastSet string
 }
 
 // UserEntry renders a user's LDAP attributes, including the fully flattened
@@ -72,6 +78,9 @@ func UserEntry(baseDN string, u identity.User, flattenedGroups []string, samba *
 		)
 		if samba.NTHash != "" {
 			attrs = append(attrs, Attribute{Name: "sambaNTPassword", Values: []string{samba.NTHash}, Sensitive: true})
+		}
+		if samba.PwdLastSet != "" {
+			attrs = append(attrs, Attribute{Name: "sambaPwdLastSet", Values: []string{samba.PwdLastSet}, Sensitive: true})
 		}
 	}
 	return attrs
@@ -184,7 +193,7 @@ func SubschemaEntry() []Attribute {
 			`( 2.5.6.5 NAME 'organizationalUnit' SUP top STRUCTURAL MUST ou )`,
 			`( 0.9.2342.19200300.100.4.13 NAME 'domain' SUP top STRUCTURAL MUST dc MAY o )`,
 			`( 1.3.6.1.4.1.61313.1.1 NAME 'declarativeAuthUser' SUP top AUXILIARY MAY ( memberOf ) )`,
-			`( 1.3.6.1.4.1.7165.2.2.6 NAME 'sambaSamAccount' SUP top AUXILIARY MUST ( uid $ sambaSID ) MAY ( sambaNTPassword $ sambaAcctFlags $ sambaDomainName ) )`,
+			`( 1.3.6.1.4.1.7165.2.2.6 NAME 'sambaSamAccount' SUP top AUXILIARY MUST ( uid $ sambaSID ) MAY ( sambaNTPassword $ sambaPwdLastSet $ sambaAcctFlags $ sambaDomainName ) )`,
 			`( 1.3.6.1.4.1.7165.2.2.5 NAME 'sambaDomain' SUP top STRUCTURAL MUST ( sambaDomainName $ sambaSID ) )`,
 		}},
 		{Name: "attributeTypes", Values: []string{
@@ -202,6 +211,7 @@ func SubschemaEntry() []Attribute {
 			`( 2.5.4.11 NAME 'ou' EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )`,
 			`( 1.3.6.1.4.1.7165.2.1.20 NAME 'sambaSID' EQUALITY caseIgnoreIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
 			`( 1.3.6.1.4.1.7165.2.1.25 NAME 'sambaNTPassword' EQUALITY caseIgnoreIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
+			`( 1.3.6.1.4.1.7165.2.1.24 NAME 'sambaPwdLastSet' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 )`,
 			`( 1.3.6.1.4.1.7165.2.1.26 NAME 'sambaAcctFlags' EQUALITY caseIgnoreIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
 			`( 1.3.6.1.4.1.7165.2.1.38 NAME 'sambaDomainName' EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )`,
 		}},
