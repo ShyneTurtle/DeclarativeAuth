@@ -32,7 +32,7 @@ func testHandler() *Handler {
 
 func TestEntriesFor_RootDSE(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), "", scopeBaseObject, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), "", scopeBaseObject, true, sambaContext{})
 	if len(entries) != 1 || entries[0].dn != "" {
 		t.Fatalf("expected a single unnamed RootDSE entry, got %v", entries)
 	}
@@ -43,7 +43,7 @@ func TestEntriesFor_RootDSE(t *testing.T) {
 
 func TestEntriesFor_Subschema(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), SubschemaDN, scopeBaseObject, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), SubschemaDN, scopeBaseObject, true, sambaContext{})
 	if len(entries) != 1 || entries[0].dn != SubschemaDN {
 		t.Fatalf("expected the subschema entry, got %v", entries)
 	}
@@ -51,7 +51,7 @@ func TestEntriesFor_Subschema(t *testing.T) {
 
 func TestEntriesFor_BaseScope_ReturnsBaseEntryOnly(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), "dc=example,dc=com", scopeBaseObject, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), "dc=example,dc=com", scopeBaseObject, true, sambaContext{})
 	if len(entries) != 1 || entries[0].dn != "dc=example,dc=com" {
 		t.Fatalf("expected only the base entry, got %v", entries)
 	}
@@ -59,7 +59,7 @@ func TestEntriesFor_BaseScope_ReturnsBaseEntryOnly(t *testing.T) {
 
 func TestEntriesFor_SingleLevel_ReturnsOUsOnly(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), "dc=example,dc=com", scopeSingleLevel, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), "dc=example,dc=com", scopeSingleLevel, true, sambaContext{})
 	if len(entries) != 2 {
 		t.Fatalf("expected exactly the two OU containers, got %v", entries)
 	}
@@ -72,7 +72,7 @@ func TestEntriesFor_SingleLevel_ReturnsOUsOnly(t *testing.T) {
 
 func TestEntriesFor_WholeSubtree_ReturnsEverything(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), "dc=example,dc=com", scopeWholeSubtree, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), "dc=example,dc=com", scopeWholeSubtree, true, sambaContext{})
 	// base + ou=users + jsmith + ou=groups + engineering
 	if len(entries) != 5 {
 		t.Fatalf("expected 5 entries in the whole subtree, got %d: %v", len(entries), entries)
@@ -81,7 +81,7 @@ func TestEntriesFor_WholeSubtree_ReturnsEverything(t *testing.T) {
 
 func TestEntriesFor_LeafUser_SingleLevelHasNoChildren(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), "uid=jsmith,ou=users,dc=example,dc=com", scopeSingleLevel, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), "uid=jsmith,ou=users,dc=example,dc=com", scopeSingleLevel, true, sambaContext{})
 	if len(entries) != 0 {
 		t.Fatalf("a leaf user entry has no children, got %v", entries)
 	}
@@ -89,7 +89,7 @@ func TestEntriesFor_LeafUser_SingleLevelHasNoChildren(t *testing.T) {
 
 func TestEntriesFor_LeafUser_BaseScope(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, sambaContext{})
 	if len(entries) != 1 || entries[0].dn != "uid=jsmith,ou=users,dc=example,dc=com" {
 		t.Fatalf("expected jsmith's entry, got %v", entries)
 	}
@@ -97,7 +97,7 @@ func TestEntriesFor_LeafUser_BaseScope(t *testing.T) {
 
 func TestEntriesFor_UnknownBase_ReturnsNothing(t *testing.T) {
 	h := testHandler()
-	entries := h.entriesFor(testSnapshot(), "dc=nowhere,dc=com", scopeWholeSubtree, true, false, nil)
+	entries := h.entriesFor(testSnapshot(), "dc=nowhere,dc=com", scopeWholeSubtree, true, sambaContext{})
 	if len(entries) != 0 {
 		t.Fatalf("expected no entries for an unrelated base, got %v", entries)
 	}
@@ -237,7 +237,7 @@ func testSambaHandler() *Handler {
 func TestEntriesFor_SambaPrivileged_AddsUserSambaAttrs(t *testing.T) {
 	h := testSambaHandler()
 	creds := map[string]store.SambaCredential{"jsmith": {NTHash: "8846F7EAEE8FB117AD06BDD830B7586C", RID: 1000}}
-	entries := h.entriesFor(testSnapshotWithSambaReader(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, true, creds)
+	entries := h.entriesFor(testSnapshotWithSambaReader(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, sambaContext{privileged: true, creds: creds})
 	if len(entries) != 1 {
 		t.Fatalf("expected jsmith's entry, got %v", entries)
 	}
@@ -252,7 +252,7 @@ func TestEntriesFor_SambaPrivileged_AddsUserSambaAttrs(t *testing.T) {
 func TestEntriesFor_NotPrivileged_NoSambaAttrsEvenIfCredsProvided(t *testing.T) {
 	h := testSambaHandler()
 	creds := map[string]store.SambaCredential{"jsmith": {NTHash: "8846F7EAEE8FB117AD06BDD830B7586C", RID: 1000}}
-	entries := h.entriesFor(testSnapshotWithSambaReader(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, false, creds)
+	entries := h.entriesFor(testSnapshotWithSambaReader(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, sambaContext{privileged: false, creds: creds})
 	if got := attrValues(entries[0].attrs, "sambaSID"); len(got) != 0 {
 		t.Fatalf("expected no sambaSID when the search isn't samba-privileged, got %v", got)
 	}
@@ -260,7 +260,7 @@ func TestEntriesFor_NotPrivileged_NoSambaAttrsEvenIfCredsProvided(t *testing.T) 
 
 func TestEntriesFor_SambaPrivileged_NoCredYetMeansNoSambaAttrs(t *testing.T) {
 	h := testSambaHandler()
-	entries := h.entriesFor(testSnapshotWithSambaReader(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, true, map[string]store.SambaCredential{})
+	entries := h.entriesFor(testSnapshotWithSambaReader(), "uid=jsmith,ou=users,dc=example,dc=com", scopeBaseObject, true, sambaContext{privileged: true, creds: map[string]store.SambaCredential{}})
 	if got := attrValues(entries[0].attrs, "sambaSID"); len(got) != 0 {
 		t.Fatalf("expected no sambaSID before an NT hash has been computed for this user, got %v", got)
 	}
@@ -268,7 +268,7 @@ func TestEntriesFor_SambaPrivileged_NoCredYetMeansNoSambaAttrs(t *testing.T) {
 
 func TestEntriesFor_SambaPrivileged_DomainEntryAppearsUnderBaseSingleLevel(t *testing.T) {
 	h := testSambaHandler()
-	entries := h.entriesFor(testSnapshotWithSambaReader(), "dc=example,dc=com", scopeSingleLevel, true, true, nil)
+	entries := h.entriesFor(testSnapshotWithSambaReader(), "dc=example,dc=com", scopeSingleLevel, true, sambaContext{privileged: true})
 	wantDN := "sambaDomainName=WORKGROUP,dc=example,dc=com"
 	found := false
 	for _, e := range entries {
@@ -283,10 +283,56 @@ func TestEntriesFor_SambaPrivileged_DomainEntryAppearsUnderBaseSingleLevel(t *te
 
 func TestEntriesFor_NotPrivileged_NoDomainEntry(t *testing.T) {
 	h := testSambaHandler()
-	entries := h.entriesFor(testSnapshotWithSambaReader(), "dc=example,dc=com", scopeSingleLevel, true, false, nil)
+	entries := h.entriesFor(testSnapshotWithSambaReader(), "dc=example,dc=com", scopeSingleLevel, true, sambaContext{})
 	for _, e := range entries {
 		if e.dn == "sambaDomainName=WORKGROUP,dc=example,dc=com" {
 			t.Fatalf("expected no sambaDomain entry when the search isn't samba-privileged, got %v", entries)
+		}
+	}
+}
+
+func TestEntriesFor_SambaPrivileged_AddsGroupSambaAttrsAndWellKnownGroup(t *testing.T) {
+	h := testSambaHandler()
+	groupRIDs := map[string]int64{"samba-readers": 1001}
+	sc := sambaContext{privileged: true, groupRIDs: groupRIDs}
+	entries := h.entriesFor(testSnapshotWithSambaReader(), "cn=samba-readers,ou=groups,dc=example,dc=com", scopeBaseObject, true, sc)
+	if len(entries) != 1 {
+		t.Fatalf("expected samba-readers's entry, got %v", entries)
+	}
+	if got := attrValues(entries[0].attrs, "sambaSID"); len(got) != 1 || got[0] != "S-1-5-21-1-2-3-1001" {
+		t.Fatalf("expected sambaSID [S-1-5-21-1-2-3-1001], got %v", got)
+	}
+
+	// The whole-subtree listing must also include the synthetic "Domain
+	// Users" group (RID 513, fixed) even though it's not declared anywhere
+	// in the snapshot -- see SambaWellKnownGroupName.
+	entries = h.entriesFor(testSnapshotWithSambaReader(), "dc=example,dc=com", scopeWholeSubtree, true, sc)
+	wantDN := "cn=Domain Users,ou=groups,dc=example,dc=com"
+	found := false
+	for _, e := range entries {
+		if e.dn == wantDN {
+			found = true
+			if got := attrValues(e.attrs, "sambaSID"); len(got) != 1 || got[0] != "S-1-5-21-1-2-3-513" {
+				t.Fatalf("expected Domain Users sambaSID [S-1-5-21-1-2-3-513], got %v", got)
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("expected the synthetic Domain Users group (%s) among whole-subtree results, got %v", wantDN, entries)
+	}
+}
+
+func TestEntriesFor_NotPrivileged_NoGroupSambaAttrsOrWellKnownGroup(t *testing.T) {
+	h := testSambaHandler()
+	entries := h.entriesFor(testSnapshotWithSambaReader(), "cn=samba-readers,ou=groups,dc=example,dc=com", scopeBaseObject, true, sambaContext{})
+	if got := attrValues(entries[0].attrs, "sambaSID"); len(got) != 0 {
+		t.Fatalf("expected no sambaSID when the search isn't samba-privileged, got %v", got)
+	}
+
+	entries = h.entriesFor(testSnapshotWithSambaReader(), "dc=example,dc=com", scopeWholeSubtree, true, sambaContext{})
+	for _, e := range entries {
+		if e.dn == "cn=Domain Users,ou=groups,dc=example,dc=com" {
+			t.Fatalf("expected no synthetic Domain Users group when the search isn't samba-privileged, got %v", entries)
 		}
 	}
 }

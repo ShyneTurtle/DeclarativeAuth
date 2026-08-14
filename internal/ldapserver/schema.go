@@ -1,6 +1,7 @@
 package ldapserver
 
 import (
+	"fmt"
 	"strings"
 
 	"declarativeauth/internal/identity"
@@ -45,6 +46,61 @@ type SambaUserAttrs struct {
 	// password" prompt on every logon -- found live, blocking every Samba login
 	// regardless of how the account was actually provisioned.
 	PwdLastSet string
+	// PrimaryGroupSID is rendered as sambaPrimaryGroupSID for compatibility
+	// with LDAP-aware Samba tooling that reads it (e.g. `samba-tool domain
+	// classicupgrade`). On its own it does NOT fix pdbedit/smbd showing
+	// "Primary Group SID: (NULL SID)" -- verified against Samba 4.17's own
+	// source (source3/passdb/pdb_ldap.c): init_sam_from_ldap never reads
+	// this attribute for a live ldapsam bind. The actual mechanism,
+	// get_primary_group_sid() in source3/passdb/lookup_sid.c, always calls
+	// getpwnam(3) on the Samba host and maps its pw_gid to a SID; it never
+	// asks LDAP for a group SID directly. See UIDNumber/GIDNumber below,
+	// which is what that getpwnam(3) call needs (via NSS -- nss_ldap/sssd/
+	// nslcd, or winbind with `ldapsam:trusted = yes` -- pointed at this
+	// same LDAP server) to resolve to anything other than
+	// NT_STATUS_NO_SUCH_USER, confirmed to be the real root cause of the
+	// NULL SID by running pdbedit against this server in the devcontainer.
+	PrimaryGroupSID string
+	// UIDNumber/GIDNumber add posixAccount, making this user resolvable via
+	// NSS getpwnam(3) once the Samba host's nsswitch.conf is pointed at
+	// this LDAP server -- see PrimaryGroupSID above for why that's what
+	// actually matters, not sambaPrimaryGroupSID. GIDNumber is always
+	// SambaDomainUsersRID (513): this system has no notion of a per-user
+	// primary group, matching PrimaryGroupSID.
+	UIDNumber string
+	GIDNumber string
+}
+
+// SambaDomainUsersRID is the well-known RID for the "Domain Users" group,
+// fixed by the Windows/Samba SID scheme (not configurable) -- see
+// PrimaryGroupSID.
+const SambaDomainUsersRID = 513
+
+// SambaWellKnownGroupName is the "Domain Users" group every user's
+// PrimaryGroupSID points at. It has no row in identity.Snapshot.Groups --
+// it's not a declared group, just the fixed RID-513 group the Windows/Samba
+// SID scheme requires to exist -- so it's synthesized directly into search
+// results (see SambaWellKnownGroupEntry) instead of being sourced from
+// config like every other group. Real ldapsam backends normally bootstrap
+// this entry into LDAP themselves on first run; this server's identity is
+// read-only via LDAP, so nothing ever would otherwise.
+const SambaWellKnownGroupName = "Domain Users"
+
+// SambaGroupAttrs is a declarative group's Samba-specific attributes,
+// added to GroupEntry's output only for a search privileged via the
+// samba-readers group -- mirrors SambaUserAttrs. RID is assigned once per
+// group name and persisted (see store.SambaGroupStore), the same way a
+// user's RID is.
+type SambaGroupAttrs struct {
+	SID string
+	// GIDNumber mirrors the RID embedded in SID, rendered as a POSIX gid --
+	// required by posixGroup (MUST gidNumber) and read by Samba's
+	// pdb_enum_group_members-style group-membership lookups alongside
+	// memberUid, which is what actually makes a declarative group usable in
+	// a Windows ACL: sambaGroupMapping alone gives the group a resolvable
+	// name/SID, but membership resolution for building a user's access
+	// token comes from here, not from groupOfNames' DN-valued "member".
+	GIDNumber string
 }
 
 // UserEntry renders a user's LDAP attributes, including the fully flattened
@@ -61,6 +117,9 @@ func UserEntry(baseDN string, u identity.User, flattenedGroups []string, samba *
 	objectClasses := []string{"declarativeAuthUser", "inetOrgPerson"}
 	if samba != nil {
 		objectClasses = append(objectClasses, "sambaSamAccount")
+		if samba.UIDNumber != "" {
+			objectClasses = append(objectClasses, "posixAccount")
+		}
 	}
 	attrs := []Attribute{
 		{Name: "objectClass", Values: objectClasses},
@@ -76,6 +135,21 @@ func UserEntry(baseDN string, u identity.User, flattenedGroups []string, samba *
 			Attribute{Name: "sambaSID", Values: []string{samba.SID}, Sensitive: true},
 			Attribute{Name: "sambaAcctFlags", Values: []string{sambaAcctFlags(samba.Enabled)}, Sensitive: true},
 		)
+		if samba.PrimaryGroupSID != "" {
+			attrs = append(attrs, Attribute{Name: "sambaPrimaryGroupSID", Values: []string{samba.PrimaryGroupSID}, Sensitive: true})
+		}
+		if samba.UIDNumber != "" {
+			attrs = append(attrs,
+				Attribute{Name: "uidNumber", Values: []string{samba.UIDNumber}, Sensitive: true},
+				Attribute{Name: "gidNumber", Values: []string{samba.GIDNumber}, Sensitive: true},
+				// Fixed, not declarative: this system has no notion of a
+				// per-user home directory or login shell, and neither is
+				// meant for interactive Unix login -- this exists purely so
+				// getpwnam(3) (see PrimaryGroupSID) resolves to something.
+				Attribute{Name: "homeDirectory", Values: []string{"/home/" + u.Username}, Sensitive: true},
+				Attribute{Name: "loginShell", Values: []string{"/bin/false"}, Sensitive: true},
+			)
+		}
 		if samba.NTHash != "" {
 			attrs = append(attrs, Attribute{Name: "sambaNTPassword", Values: []string{samba.NTHash}, Sensitive: true})
 		}
@@ -118,16 +192,49 @@ func SambaDomainEntry(domainName, domainSID string) []Attribute {
 // with zero flattened members (legal in this system's declarative config)
 // necessarily violates that MUST, same as any other empty-group LDAP
 // server -- there is no valid groupOfNames encoding of "no members yet".
-func GroupEntry(baseDN string, g identity.Group, flattenedMembers []string) []Attribute {
+// samba, when non-nil, adds posixGroup/sambaGroupMapping so the group can be
+// resolved by SID and used in a Windows ACL -- the caller is responsible for
+// only ever passing a non-nil value to an already-privileged requester, same
+// as UserEntry.
+func GroupEntry(baseDN string, g identity.Group, flattenedMembers []string, samba *SambaGroupAttrs) []Attribute {
 	members := make([]string, len(flattenedMembers))
 	for i, username := range flattenedMembers {
 		members[i] = UserDN(baseDN, username)
 	}
-	return []Attribute{
-		{Name: "objectClass", Values: []string{"groupOfNames"}},
+	objectClasses := []string{"groupOfNames"}
+	if samba != nil {
+		objectClasses = append(objectClasses, "posixGroup", "sambaGroupMapping")
+	}
+	attrs := []Attribute{
+		{Name: "objectClass", Values: objectClasses},
 		{Name: "cn", Values: []string{g.Name}},
 		{Name: "description", Values: nonEmpty(g.Description)},
 		{Name: "member", Values: members},
+	}
+	if samba != nil {
+		attrs = append(attrs,
+			Attribute{Name: "gidNumber", Values: []string{samba.GIDNumber}, Sensitive: true},
+			Attribute{Name: "memberUid", Values: flattenedMembers, Sensitive: true},
+			Attribute{Name: "sambaSID", Values: []string{samba.SID}, Sensitive: true},
+			Attribute{Name: "sambaGroupType", Values: []string{"2"}, Sensitive: true}, // 2 = SID_NAME_DOM_GRP
+		)
+	}
+	return attrs
+}
+
+// SambaWellKnownGroupEntry renders the synthetic "Domain Users" group (see
+// SambaWellKnownGroupName) every user's sambaPrimaryGroupSID points at.
+// Unlike GroupEntry it's never built from identity.Snapshot -- there is no
+// membership list to synthesize (a user's primary group is implied by
+// SambaUserAttrs.PrimaryGroupSID on their own entry, not by enumerating this
+// group's members), only the identity a SID-to-name/gid lookup needs.
+func SambaWellKnownGroupEntry(domainSID string) []Attribute {
+	return []Attribute{
+		{Name: "objectClass", Values: []string{"groupOfNames", "posixGroup", "sambaGroupMapping"}},
+		{Name: "cn", Values: []string{SambaWellKnownGroupName}},
+		{Name: "gidNumber", Values: []string{fmt.Sprintf("%d", SambaDomainUsersRID)}, Sensitive: true},
+		{Name: "sambaSID", Values: []string{fmt.Sprintf("%s-%d", domainSID, SambaDomainUsersRID)}, Sensitive: true},
+		{Name: "sambaGroupType", Values: []string{"2"}, Sensitive: true},
 	}
 }
 
@@ -193,8 +300,15 @@ func SubschemaEntry() []Attribute {
 			`( 2.5.6.5 NAME 'organizationalUnit' SUP top STRUCTURAL MUST ou )`,
 			`( 0.9.2342.19200300.100.4.13 NAME 'domain' SUP top STRUCTURAL MUST dc MAY o )`,
 			`( 1.3.6.1.4.1.61313.1.1 NAME 'declarativeAuthUser' SUP top AUXILIARY MAY ( memberOf ) )`,
-			`( 1.3.6.1.4.1.7165.2.2.6 NAME 'sambaSamAccount' SUP top AUXILIARY MUST ( uid $ sambaSID ) MAY ( sambaNTPassword $ sambaPwdLastSet $ sambaAcctFlags $ sambaDomainName ) )`,
+			`( 1.3.6.1.4.1.7165.2.2.6 NAME 'sambaSamAccount' SUP top AUXILIARY MUST ( uid $ sambaSID ) MAY ( sambaNTPassword $ sambaPwdLastSet $ sambaAcctFlags $ sambaDomainName $ sambaPrimaryGroupSID ) )`,
 			`( 1.3.6.1.4.1.7165.2.2.5 NAME 'sambaDomain' SUP top STRUCTURAL MUST ( sambaDomainName $ sambaSID ) )`,
+			// RFC 2307 declares posixAccount/posixGroup STRUCTURAL;
+			// declared AUXILIARY here since every entry that carries either
+			// also carries inetOrgPerson/groupOfNames, and an entry can
+			// only have one STRUCTURAL class.
+			`( 1.3.6.1.1.1.2.0 NAME 'posixAccount' SUP top AUXILIARY MUST ( cn $ uid $ uidNumber $ gidNumber $ homeDirectory ) MAY ( userPassword $ loginShell $ gecos $ description ) )`,
+			`( 1.3.6.1.1.1.2.2 NAME 'posixGroup' SUP top AUXILIARY MUST ( cn $ gidNumber ) MAY ( memberUid $ description ) )`,
+			`( 1.3.6.1.4.1.7165.2.2.4 NAME 'sambaGroupMapping' SUP top AUXILIARY MUST ( sambaSID $ sambaGroupType ) MAY ( displayName $ description ) )`,
 		}},
 		{Name: "attributeTypes", Values: []string{
 			`( 2.5.4.0 NAME 'objectClass' EQUALITY objectIdentifierMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.38 )`,
@@ -214,6 +328,15 @@ func SubschemaEntry() []Attribute {
 			`( 1.3.6.1.4.1.7165.2.1.24 NAME 'sambaPwdLastSet' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 )`,
 			`( 1.3.6.1.4.1.7165.2.1.26 NAME 'sambaAcctFlags' EQUALITY caseIgnoreIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
 			`( 1.3.6.1.4.1.7165.2.1.38 NAME 'sambaDomainName' EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )`,
+			`( 1.3.6.1.4.1.7165.2.1.21 NAME 'sambaPrimaryGroupSID' EQUALITY caseIgnoreIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
+			`( 1.3.6.1.1.1.1.1 NAME 'gidNumber' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 )`,
+			`( 1.3.6.1.1.1.1.12 NAME 'memberUid' EQUALITY caseExactIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
+			`( 1.3.6.1.4.1.7165.2.1.19 NAME 'sambaGroupType' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 )`,
+			`( 2.16.840.1.113730.3.1.241 NAME 'displayName' EQUALITY caseIgnoreMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.15 )`,
+			`( 1.3.6.1.1.1.1.0 NAME 'uidNumber' EQUALITY integerMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.27 )`,
+			`( 1.3.6.1.1.1.1.3 NAME 'homeDirectory' EQUALITY caseExactIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
+			`( 1.3.6.1.1.1.1.4 NAME 'loginShell' EQUALITY caseExactIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
+			`( 1.3.6.1.1.1.1.2 NAME 'gecos' EQUALITY caseIgnoreIA5Match SYNTAX 1.3.6.1.4.1.1466.115.121.1.26 )`,
 		}},
 	}
 }

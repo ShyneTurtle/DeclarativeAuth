@@ -13,6 +13,7 @@ import (
 	"declarativeauth/internal/auth"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/ldapserver"
+	"declarativeauth/internal/store"
 	dtls "declarativeauth/internal/tls"
 
 	goldap "github.com/go-ldap/ldap/v3"
@@ -49,6 +50,11 @@ func startLDAPServer(t *testing.T, identityFixture string, opts ...func(*ldapser
 		Config:        cfg,
 		Snapshot:      holder.Get,
 		Authenticator: authenticator,
+		// Wired up unconditionally -- harmless for the tests in this file,
+		// none of which set Config.SambaReadersGroup, but required by any
+		// test (e.g. samba-privileged search tests) that does.
+		Credentials: authenticator.Credentials,
+		SambaGroups: &store.SambaGroupStore{Pool: pool},
 	}
 	tlsSrc, err := dtls.NewSelfSignedSource()
 	if err != nil {

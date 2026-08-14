@@ -313,7 +313,7 @@ with `net getlocalsid` on the Samba host, then never change it) and
 `DECLARATIVEAUTH_LDAP_SAMBA_DOMAIN_NAME` (Samba's `workgroup`). See
 `examples/.env.example`.
 
-Two things worth understanding before turning this on:
+Three things worth understanding before turning this on:
 
 - **A second, weaker credential is involved.** NTLM (what SMB actually
   speaks on the wire) requires the server to hold an NT hash -- MD4 of the
@@ -322,7 +322,30 @@ Two things worth understanding before turning this on:
   password-equivalent material if leaked, unlike Argon2id.
 - **Read access to it is gated, not just present.** Only an LDAP bind
   authenticated as a member of `DECLARATIVEAUTH_LDAP_SAMBA_READERS_GROUP`
-  can access `sambaNTPassword`, `sambaSID`, or `sambaAcctFlags`.
+  can access `sambaNTPassword`, `sambaSID`, `sambaAcctFlags`, or any of the
+  `posixAccount`/`posixGroup`/`sambaGroupMapping` attributes below.
+- **Primary group resolution needs NSS, not just LDAP.** Every user is
+  rendered with `sambaPrimaryGroupSID` pointing at the domain's well-known
+  "Domain Users" group (RID 513), but Samba's `ldapsam` backend does not
+  actually read that attribute to resolve a user's primary group -- verified
+  against Samba's own source (`source3/passdb/lookup_sid.c`,
+  `get_primary_group_sid()`): it always calls `getpwnam(3)` on the Samba
+  host and maps the result's `pw_gid` to a SID, falling back to "Domain
+  Users" only if no Unix account can be found *at all* -- in which case
+  `pdbedit`/`smbd` report the primary group as `(NULL SID)` rather than
+  falling back gracefully. To fix that, every user and group here is also
+  rendered with `posixAccount`/`posixGroup` (`uidNumber`/`gidNumber`,
+  `homeDirectory`, `loginShell`, `memberUid`), so the Samba host's own NSS
+  resolves `jsmith` and its groups correctly once something is configured to
+  read them from this same LDAP server -- `nss_ldap`/`libnss-ldapd`/`sssd`
+  in `nsswitch.conf`, or `winbindd` with `ldapsam:trusted = yes`. Without
+  that NSS wiring, the primary group SID (and any group's SID) stays
+  unresolvable to real Samba tooling even though LDAP is serving it.
+  Declarative groups get their own `sambaSID`/`sambaGroupMapping` entry too
+  (RID assigned and persisted on first use, same as a user's), so they're
+  usable in a Windows ACL once NSS resolves them -- confirmed against a real
+  `pdbedit -L -v` and `net groupmap list` run in this repo's devcontainer,
+  not just this project's own LDAP client tests.
 
 Known limitation: A declaratively-hashed account
 (`passwordHash`/`passwordHashFile`) can never get an NT hash, so such accounts

@@ -29,6 +29,13 @@ type Handler struct {
 	// be nil) otherwise.
 	Credentials *store.CredentialStore
 
+	// SambaGroups, when Config.SambaReadersGroup is set, is consulted by a
+	// privileged search to assign/persist each declarative group's RID and
+	// populate sambaGroupMapping. Unused (may be nil) otherwise -- a nil
+	// SambaGroups with SambaReadersGroup set still serves sambaSamAccount
+	// user data, just without group SIDs (see sambaGroupAttrsFor).
+	SambaGroups *store.SambaGroupStore
+
 	OnBind   func(username string, success bool, sourceIP string, reason string)
 	OnSearch func(sourceIP string)
 }

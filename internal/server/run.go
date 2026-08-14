@@ -121,6 +121,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			Authenticator: authenticator,
 			TrustedProxy:  trustedProxies,
 			Credentials:   &store.CredentialStore{Pool: pool},
+			SambaGroups:   &store.SambaGroupStore{Pool: pool},
 			Logger:        logger,
 			OnBind: func(username string, success bool, sourceIP, reason string) {
 				eventType := "ldap_bind_failure"
