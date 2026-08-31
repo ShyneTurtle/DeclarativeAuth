@@ -141,7 +141,16 @@ Two separate kinds of input, deliberately different in shape:
    `declarativeauth admin hash-password`. See `svc-example` in
    [`examples/identity/users.yaml`](examples/identity/users.yaml) and
    [`deploy/kubernetes/secret-ldap-passwords.yaml`](deploy/kubernetes/secret-ldap-passwords.yaml)
-   for both flavors worked out.
+   for both flavors worked out. A user or group can also declare
+   `customAttribute`: arbitrary out-of-schema LDAP attributes (eg. a phone
+   number). A group can additionally declare `userCustomAttribute`/
+   `directUserCustomAttribute` to push a custom attribute onto every member's
+   own entry instead of the group's. See 
+   [`examples/identity/users.yaml`](examples/identity/users.yaml) and
+   [`examples/identity/groups.yaml`](examples/identity/groups.yaml) for the
+   value-shape rules and a worked example of all three. Two sources
+   declaring the same attribute key for the same user gives a warning as the 
+   attribute is dropped for that user to avoid unpredictable behavior.
 2. **Server config** -- *how the process runs*: listeners, database DSN,
    SMTP, rate limiting, TLS, admin UI. Entirely `DECLARATIVEAUTH_*`
    environment variables, set once at process start. See

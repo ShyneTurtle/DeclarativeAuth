@@ -2,6 +2,7 @@ package ldapserver
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"declarativeauth/internal/identity"
@@ -109,7 +110,7 @@ type SambaGroupAttrs struct {
 // objectClass with sambaSID/sambaNTPassword/sambaAcctFlags -- the caller is
 // responsible for only ever passing a non-nil value to an already-privileged
 // requester (see internal/ldapserver.Config.SambaReadersGroup).
-func UserEntry(baseDN string, u identity.User, flattenedGroups []string, samba *SambaUserAttrs) []Attribute {
+func UserEntry(baseDN string, u identity.User, flattenedGroups []string, samba *SambaUserAttrs, custom map[string][]string) []Attribute {
 	memberOf := make([]string, len(flattenedGroups))
 	for i, g := range flattenedGroups {
 		memberOf[i] = GroupDN(baseDN, g)
@@ -120,6 +121,9 @@ func UserEntry(baseDN string, u identity.User, flattenedGroups []string, samba *
 		if samba.UIDNumber != "" {
 			objectClasses = append(objectClasses, "posixAccount")
 		}
+	}
+	if len(custom) > 0 {
+		objectClasses = append(objectClasses, "extensibleObject")
 	}
 	attrs := []Attribute{
 		{Name: "objectClass", Values: objectClasses},
@@ -156,6 +160,29 @@ func UserEntry(baseDN string, u identity.User, flattenedGroups []string, samba *
 		if samba.PwdLastSet != "" {
 			attrs = append(attrs, Attribute{Name: "sambaPwdLastSet", Values: []string{samba.PwdLastSet}, Sensitive: true})
 		}
+	}
+	attrs = append(attrs, customAttributesToAttrs(custom)...)
+	return attrs
+}
+
+// customAttributesToAttrs renders a resolved custom-attribute map (see
+// identity.ResolveCustomAttributes) as ordinary, non-Sensitive LDAP
+// attributes: these are plain directory data declared by the operator (a
+// phone number, a cost center), not the Samba namespace's gated credential
+// material, so they're visible to any search that would otherwise see this
+// entry at all. Sorted by name for a deterministic wire order.
+func customAttributesToAttrs(custom map[string][]string) []Attribute {
+	if len(custom) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(custom))
+	for name := range custom {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	attrs := make([]Attribute, 0, len(names))
+	for _, name := range names {
+		attrs = append(attrs, Attribute{Name: name, Values: custom[name]})
 	}
 	return attrs
 }
@@ -196,7 +223,7 @@ func SambaDomainEntry(domainName, domainSID string) []Attribute {
 // resolved by SID and used in a Windows ACL -- the caller is responsible for
 // only ever passing a non-nil value to an already-privileged requester, same
 // as UserEntry.
-func GroupEntry(baseDN string, g identity.Group, flattenedMembers []string, samba *SambaGroupAttrs) []Attribute {
+func GroupEntry(baseDN string, g identity.Group, flattenedMembers []string, samba *SambaGroupAttrs, custom map[string][]string) []Attribute {
 	members := make([]string, len(flattenedMembers))
 	for i, username := range flattenedMembers {
 		members[i] = UserDN(baseDN, username)
@@ -204,6 +231,9 @@ func GroupEntry(baseDN string, g identity.Group, flattenedMembers []string, samb
 	objectClasses := []string{"groupOfNames"}
 	if samba != nil {
 		objectClasses = append(objectClasses, "posixGroup", "sambaGroupMapping")
+	}
+	if len(custom) > 0 {
+		objectClasses = append(objectClasses, "extensibleObject")
 	}
 	attrs := []Attribute{
 		{Name: "objectClass", Values: objectClasses},
@@ -219,6 +249,7 @@ func GroupEntry(baseDN string, g identity.Group, flattenedMembers []string, samb
 			Attribute{Name: "sambaGroupType", Values: []string{"2"}, Sensitive: true}, // 2 = SID_NAME_DOM_GRP
 		)
 	}
+	attrs = append(attrs, customAttributesToAttrs(custom)...)
 	return attrs
 }
 
@@ -309,6 +340,13 @@ func SubschemaEntry() []Attribute {
 			`( 1.3.6.1.1.1.2.0 NAME 'posixAccount' SUP top AUXILIARY MUST ( cn $ uid $ uidNumber $ gidNumber $ homeDirectory ) MAY ( userPassword $ loginShell $ gecos $ description ) )`,
 			`( 1.3.6.1.1.1.2.2 NAME 'posixGroup' SUP top AUXILIARY MUST ( cn $ gidNumber ) MAY ( memberUid $ description ) )`,
 			`( 1.3.6.1.4.1.7165.2.2.4 NAME 'sambaGroupMapping' SUP top AUXILIARY MUST ( sambaSID $ sambaGroupType ) MAY ( displayName $ description ) )`,
+			// The standard RFC 4512 "any attribute allowed" class -- added to
+			// an entry only when it actually carries at least one declarative
+			// customAttribute/userCustomAttribute/directUserCustomAttribute
+			// (see UserEntry/GroupEntry), since those attribute names are
+			// arbitrary and unbounded and can't be enumerated here ahead of
+			// time the way every other attributeType in this list is.
+			`( 1.3.6.1.4.1.1466.101.120.111 NAME 'extensibleObject' SUP top AUXILIARY )`,
 		}},
 		{Name: "attributeTypes", Values: []string{
 			`( 2.5.4.0 NAME 'objectClass' EQUALITY objectIdentifierMatch SYNTAX 1.3.6.1.4.1.1466.115.121.1.38 )`,

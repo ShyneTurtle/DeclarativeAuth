@@ -63,6 +63,7 @@ func (w *Watcher) LoadInitial() error {
 		)
 	}
 	w.warnIfNoUsers(snap)
+	w.warnCustomAttributeConflicts(snap)
 	return nil
 }
 
@@ -74,6 +75,22 @@ func (w *Watcher) warnIfNoUsers(snap *identity.Snapshot) {
 	if w.Logger != nil && len(snap.Users) == 0 {
 		w.Logger.Warn("identity config declares zero users -- no one can log in until at least one is declared",
 			"component", "config")
+	}
+}
+
+// warnCustomAttributeConflicts logs each custom-attribute conflict recorded
+// on a successfully loaded snapshot (see identity.ResolveCustomAttributes).
+// Not a load error: the affected attribute is simply dropped for the
+// affected user, and the rest of the snapshot -- including that user's
+// ability to authenticate -- is unaffected, but it's a real config mistake
+// worth surfacing loudly rather than only discovering it via a missing
+// attribute someone expected to be there.
+func (w *Watcher) warnCustomAttributeConflicts(snap *identity.Snapshot) {
+	if w.Logger == nil {
+		return
+	}
+	for _, msg := range snap.CustomAttributeConflicts {
+		w.Logger.Warn("custom attribute conflict: "+msg, "component", "config")
 	}
 }
 
@@ -200,6 +217,7 @@ func (w *Watcher) reload() {
 		)
 	}
 	w.warnIfNoUsers(snap)
+	w.warnCustomAttributeConflicts(snap)
 	if w.OnReload != nil {
 		w.OnReload(ReloadResult{Diff: diff})
 	}

@@ -13,6 +13,23 @@ type Group struct {
 	// transitive, same as any other membership property -- must complete
 	// email-based MFA at login. See Snapshot.MFARequiredByDeclaration.
 	RequireMFA bool
+	// CustomAttributes are arbitrary out-of-schema LDAP attributes set on
+	// this group's own entry (e.g. a costCenter code), keyed by attribute
+	// name. See UserCustomAttributes/DirectUserCustomAttributes for the
+	// variants that target member users' entries instead of this group's
+	// own, and ResolveCustomAttributes for how all of these get merged.
+	CustomAttributes map[string][]string
+	// UserCustomAttributes are custom attributes pushed onto the LDAP entry
+	// of every user transitively (flattened) in this group, rather than
+	// onto this group's own entry -- e.g. every engineering member getting
+	// department: Engineering without declaring it on each user
+	// individually. See DirectUserCustomAttributes for the
+	// direct-membership-only variant.
+	UserCustomAttributes map[string][]string
+	// DirectUserCustomAttributes is UserCustomAttributes' direct-membership
+	// counterpart: only pushed to users who list this exact group in their
+	// own MemberOfGroups, not transitive/nested members.
+	DirectUserCustomAttributes map[string][]string
 }
 
 // User is a declared user with direct group memberships.
@@ -42,6 +59,11 @@ type User struct {
 	// (LDAP service/bind accounts, CI users) rather than a person who'd want
 	// self-service password changes.
 	PasswordHash string
+	// CustomAttributes are arbitrary out-of-schema LDAP attributes declared
+	// directly on this user (e.g. a phone number), keyed by attribute name.
+	// See Group.UserCustomAttributes for the group-pushed equivalent and
+	// ResolveCustomAttributes for how conflicts between the two are handled.
+	CustomAttributes map[string][]string
 }
 
 // DisplayNameOrDefault returns the user's explicit DisplayName if set,
@@ -100,8 +122,28 @@ type Snapshot struct {
 	// every user transitively in it -- the LDAP "member" side (see
 	// ResolveFlattenedMembers).
 	FlattenedMembers map[string][]string
-	LoadedAt         time.Time
-	SourceHash       string
+	// ResolvedUserAttributes is, per username, the fully merged set of
+	// custom LDAP attributes that apply to them -- their own declared
+	// User.CustomAttributes, plus every (transitively) member group's
+	// UserCustomAttributes, plus every directly-member group's
+	// DirectUserCustomAttributes. See ResolveCustomAttributes.
+	ResolvedUserAttributes map[string]map[string][]string
+	// ResolvedGroupAttributes is, per group name, that group's own declared
+	// Group.CustomAttributes -- no merging is needed here, since nothing
+	// else ever targets a group's own entry.
+	ResolvedGroupAttributes map[string]map[string][]string
+	// CustomAttributeConflicts lists every case where a user ended up with
+	// the same custom attribute key from more than one declared source
+	// (e.g. two groups both push "department" via UserCustomAttributes, or
+	// a group's push collides with the user's own CustomAttributes). The
+	// conflicting key is dropped from ResolvedUserAttributes for that user
+	// rather than guessed at -- see config.LoadIdentity, which treats this
+	// as a config mistake worth surfacing loudly (config.Watcher logs each
+	// entry) but never a reason to reject a load or leave the server unable
+	// to authenticate.
+	CustomAttributeConflicts []string
+	LoadedAt                 time.Time
+	SourceHash               string
 }
 
 // IsMemberOf reports whether username is (transitively) a member of group.

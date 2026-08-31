@@ -18,6 +18,25 @@ type GroupSpec struct {
 	// RequireMFA, when true, requires every member of this group (direct or
 	// transitive) to complete email-based MFA at login.
 	RequireMFA bool `json:"requireMFA"`
+	// CustomAttribute declares arbitrary out-of-schema LDAP attributes set
+	// directly on this group's own entry, e.g.:
+	//   customAttribute: { costCenter: "1234" }
+	// Each value may be a scalar (string/number/boolean) or a list of
+	// them -- LDAP attributes are inherently multi-valued, so a scalar is
+	// just shorthand for a one-element list. See UserCustomAttribute for
+	// the variant that targets member users' entries instead.
+	CustomAttribute map[string]interface{} `json:"customAttribute"`
+	// UserCustomAttribute declares custom attributes pushed onto the LDAP
+	// entry of every user transitively (flattened) in this group, rather
+	// than onto this group's own entry -- e.g. every engineering member
+	// getting department: Engineering without declaring it on each user
+	// individually. Same value-shape rules as CustomAttribute. See
+	// DirectUserCustomAttribute for the direct-membership-only variant.
+	UserCustomAttribute map[string]interface{} `json:"userCustomAttribute"`
+	// DirectUserCustomAttribute is UserCustomAttribute's direct-membership
+	// counterpart: only users who list this exact group in their own
+	// memberOfGroups get it, not transitive/nested members.
+	DirectUserCustomAttribute map[string]interface{} `json:"directUserCustomAttribute"`
 }
 
 // UserFile is the on-disk shape of users.yaml.
@@ -67,6 +86,13 @@ type UserSpec struct {
 	// resolved against the identity directory being loaded. Mutually
 	// exclusive with PasswordHash.
 	PasswordHashFile string `json:"passwordHashFile"`
+	// CustomAttribute declares arbitrary out-of-schema LDAP attributes set
+	// directly on this user's own entry, e.g.:
+	//   customAttribute: { phone: "+1-555-0100" }
+	// See GroupSpec.CustomAttribute for the value-shape rules, and
+	// GroupSpec.UserCustomAttribute/DirectUserCustomAttribute for the
+	// group-pushed equivalent.
+	CustomAttribute map[string]interface{} `json:"customAttribute"`
 }
 
 // OIDCClientFile is the on-disk shape of oidc-clients.yaml. This file is

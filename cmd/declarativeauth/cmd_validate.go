@@ -34,5 +34,8 @@ func runValidateConfig(args []string) error {
 	if len(snap.Users) == 0 {
 		fmt.Println("warning: zero users declared -- no one can log in until at least one is declared")
 	}
+	for _, msg := range snap.CustomAttributeConflicts {
+		fmt.Println("warning: custom attribute conflict:", msg)
+	}
 	return nil
 }

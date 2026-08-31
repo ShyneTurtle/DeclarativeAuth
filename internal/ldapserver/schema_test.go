@@ -7,7 +7,7 @@ import (
 )
 
 func TestGroupEntry_MemberAttribute(t *testing.T) {
-	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "engineering"}, []string{"asmith", "jsmith"}, nil)
+	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "engineering"}, []string{"asmith", "jsmith"}, nil, nil)
 
 	member := attrValues(attrs, "member")
 	want := []string{"uid=asmith,ou=users,dc=example,dc=com", "uid=jsmith,ou=users,dc=example,dc=com"}
@@ -27,14 +27,14 @@ func TestGroupEntry_MemberAttribute(t *testing.T) {
 }
 
 func TestGroupEntry_EmptyGroupHasNoMemberValues(t *testing.T) {
-	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "empty"}, nil, nil)
+	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "empty"}, nil, nil, nil)
 	if got := attrValues(attrs, "member"); len(got) != 0 {
 		t.Fatalf("expected no member values for an empty group, got %v", got)
 	}
 }
 
 func TestGroupEntry_NoSambaAttrsWhenNil(t *testing.T) {
-	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "engineering"}, nil, nil)
+	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "engineering"}, nil, nil, nil)
 	if got := attrValues(attrs, "sambaSID"); len(got) != 0 {
 		t.Fatalf("expected no sambaSID when samba is nil, got %v", got)
 	}
@@ -48,7 +48,7 @@ func TestGroupEntry_NoSambaAttrsWhenNil(t *testing.T) {
 
 func TestGroupEntry_SambaAttrsPresentAndMarkedSensitive(t *testing.T) {
 	samba := &SambaGroupAttrs{SID: "S-1-5-21-1-2-3-1000", GIDNumber: "1000"}
-	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "engineering"}, []string{"jsmith"}, samba)
+	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "engineering"}, []string{"jsmith"}, samba, nil)
 
 	objectClass := attrValues(attrs, "objectClass")
 	for _, want := range []string{"groupOfNames", "posixGroup", "sambaGroupMapping"} {
@@ -95,7 +95,7 @@ func TestSambaWellKnownGroupEntry(t *testing.T) {
 
 func TestUserEntry_PosixAccountOnlyWhenUIDNumberSet(t *testing.T) {
 	withoutUID := &SambaUserAttrs{SID: "S-1-5-21-1-2-3-1000", Enabled: true}
-	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, withoutUID)
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, withoutUID, nil)
 	if got := attrValues(attrs, "uidNumber"); len(got) != 0 {
 		t.Fatalf("expected no uidNumber when UIDNumber is unset, got %v", got)
 	}
@@ -107,7 +107,7 @@ func TestUserEntry_PosixAccountOnlyWhenUIDNumberSet(t *testing.T) {
 	}
 
 	withUID := &SambaUserAttrs{SID: "S-1-5-21-1-2-3-1000", Enabled: true, UIDNumber: "1000", GIDNumber: "513"}
-	attrs = UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, withUID)
+	attrs = UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, withUID, nil)
 	found := false
 	for _, oc := range attrValues(attrs, "objectClass") {
 		if oc == "posixAccount" {
@@ -165,7 +165,7 @@ func TestOUEntry(t *testing.T) {
 }
 
 func TestUserEntry_NoSambaAttrsWhenNil(t *testing.T) {
-	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, nil)
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, nil, nil)
 	if got := attrValues(attrs, "sambaSID"); len(got) != 0 {
 		t.Fatalf("expected no sambaSID when samba is nil, got %v", got)
 	}
@@ -179,7 +179,7 @@ func TestUserEntry_NoSambaAttrsWhenNil(t *testing.T) {
 
 func TestUserEntry_SambaAttrsPresentAndMarkedSensitive(t *testing.T) {
 	samba := &SambaUserAttrs{SID: "S-1-5-21-1-2-3-1000", NTHash: "8846F7EAEE8FB117AD06BDD830B7586C", Enabled: true}
-	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, samba)
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, samba, nil)
 
 	objectClass := attrValues(attrs, "objectClass")
 	found := false
@@ -208,7 +208,7 @@ func TestUserEntry_SambaAttrsPresentAndMarkedSensitive(t *testing.T) {
 
 func TestUserEntry_NoNTPasswordAttrWhenHashNotYetComputed(t *testing.T) {
 	samba := &SambaUserAttrs{SID: "S-1-5-21-1-2-3-1000", NTHash: "", Enabled: true}
-	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, samba)
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, samba, nil)
 	if got := attrValues(attrs, "sambaNTPassword"); len(got) != 0 {
 		t.Fatalf("expected no sambaNTPassword attribute when NTHash hasn't been computed yet, got %v", got)
 	}
@@ -226,6 +226,63 @@ func TestSambaAcctFlags(t *testing.T) {
 		if len(got) != 13 { // "[" + 11 + "]"
 			t.Fatalf("expected fixed-width 13-char flags string, got %d chars: %q", len(got), got)
 		}
+	}
+}
+
+func TestUserEntry_CustomAttributes(t *testing.T) {
+	attrs := UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, nil, nil)
+	objectClass := attrValues(attrs, "objectClass")
+	for _, oc := range objectClass {
+		if oc == "extensibleObject" {
+			t.Fatalf("expected no extensibleObject objectClass with no custom attributes, got %v", objectClass)
+		}
+	}
+
+	custom := map[string][]string{"phone": {"+1-555-0100", "+1-555-0101"}}
+	attrs = UserEntry("dc=example,dc=com", identity.User{Username: "jsmith"}, nil, nil, custom)
+	if got := attrValues(attrs, "phone"); len(got) != 2 || got[0] != "+1-555-0100" || got[1] != "+1-555-0101" {
+		t.Fatalf("expected multi-valued phone attribute, got %v", got)
+	}
+	found := false
+	for _, a := range attrs {
+		if a.Name == "phone" {
+			found = true
+			if a.Sensitive {
+				t.Fatal("expected a custom attribute to not be marked Sensitive")
+			}
+		}
+		if a.Name == "objectClass" {
+			hasExtensible := false
+			for _, v := range a.Values {
+				if v == "extensibleObject" {
+					hasExtensible = true
+				}
+			}
+			if !hasExtensible {
+				t.Fatalf("expected extensibleObject objectClass when custom attributes are present, got %v", a.Values)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("expected the phone attribute to be present")
+	}
+}
+
+func TestGroupEntry_CustomAttributes(t *testing.T) {
+	custom := map[string][]string{"costCenter": {"1234"}}
+	attrs := GroupEntry("dc=example,dc=com", identity.Group{Name: "engineering"}, nil, nil, custom)
+	if got := attrValues(attrs, "costCenter"); len(got) != 1 || got[0] != "1234" {
+		t.Fatalf("expected costCenter [1234], got %v", got)
+	}
+	objectClass := attrValues(attrs, "objectClass")
+	found := false
+	for _, oc := range objectClass {
+		if oc == "extensibleObject" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected extensibleObject objectClass when custom attributes are present, got %v", objectClass)
 	}
 }
 

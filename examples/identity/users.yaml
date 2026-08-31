@@ -41,6 +41,17 @@
 #                     init-container-that-runs-admin-set-password: mount the secret, point this at
 #                     it, done. Hot-reloads like everything else here; a relative path resolves
 #                     against this identity directory. Mutually exclusive with passwordHash.
+#   customAttribute   optional map of arbitrary out-of-schema LDAP attributes to set directly on
+#                     this user's own entry (e.g. a phone number).
+#                     Each value may be a single string/number/boolean, or a list of them for a
+#                     multi-valued attribute. The attribute name must be a syntactically
+#                     valid LDAP attribute description and can't collide with one this server
+#                     already uses (uid, cn, mail, sambaSID, ...): see jsmith below. See
+#                     groups.yaml's userCustomAttribute/directUserCustomAttribute for pushing a
+#                     custom attribute onto every member of a group instead of one user at a time;
+#                     if the same attribute key ends up declared by more than one source for the
+#                     same user, a warning is thrown and the attribute is dropped for that user to 
+#                     avoid ambiguity.
 
 apiVersion: declarativeauth.io/v1
 kind: UserList
@@ -54,6 +65,8 @@ users:
       - backend-team
       - oncall              # Directly in "oncall" AND "backend-team" is redundant but harmless --
                              # oncall already implies backend-team via the diamond in groups.yaml.
+    customAttribute:
+      phone: "+1-555-0100"  # An out-of-schema attribute see groups.yaml for the rest of the custom attributes demo.
 
   - username: admin
     email: admin@example.com

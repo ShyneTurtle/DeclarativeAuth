@@ -220,7 +220,7 @@ func (h *Handler) entriesFor(snap *identity.Snapshot, baseObject string, scope i
 		}
 		if u, exists := snap.Users[username]; exists {
 			samba := h.sambaAttrsFor(username, u, sc)
-			return []entry{{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username], samba)}}
+			return []entry{{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username], samba, snap.ResolvedUserAttributes[username])}}
 		}
 		return nil
 	}
@@ -230,7 +230,7 @@ func (h *Handler) entriesFor(snap *identity.Snapshot, baseObject string, scope i
 		}
 		if g, exists := snap.Groups[name]; exists {
 			samba := h.sambaGroupAttrsFor(name, sc)
-			return []entry{{dn: GroupDN(baseDN, name), attrs: GroupEntry(baseDN, g, snap.FlattenedMembers[name], samba)}}
+			return []entry{{dn: GroupDN(baseDN, name), attrs: GroupEntry(baseDN, g, snap.FlattenedMembers[name], samba, snap.ResolvedGroupAttributes[name])}}
 		}
 		// "Domain Users" isn't a declared group -- see SambaWellKnownGroupName --
 		// so it only resolves here, never via snap.Groups, and only for a
@@ -283,7 +283,7 @@ func (h *Handler) usersSubtree(snap *identity.Snapshot, scope int, sc sambaConte
 	}
 	for username, u := range snap.Users {
 		samba := h.sambaAttrsFor(username, u, sc)
-		entries = append(entries, entry{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username], samba)})
+		entries = append(entries, entry{dn: UserDN(baseDN, username), attrs: UserEntry(baseDN, u, snap.FlattenedMemberOf[username], samba, snap.ResolvedUserAttributes[username])})
 	}
 	return entries
 }
@@ -323,7 +323,7 @@ func (h *Handler) groupsSubtree(snap *identity.Snapshot, scope int, sc sambaCont
 	}
 	for name, g := range snap.Groups {
 		samba := h.sambaGroupAttrsFor(name, sc)
-		entries = append(entries, entry{dn: GroupDN(baseDN, name), attrs: GroupEntry(baseDN, g, snap.FlattenedMembers[name], samba)})
+		entries = append(entries, entry{dn: GroupDN(baseDN, name), attrs: GroupEntry(baseDN, g, snap.FlattenedMembers[name], samba, snap.ResolvedGroupAttributes[name])})
 	}
 	if sc.privileged {
 		if _, declared := snap.Groups[SambaWellKnownGroupName]; !declared {

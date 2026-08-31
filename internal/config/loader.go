@@ -5,7 +5,9 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -84,11 +86,26 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 				if _, exists := groups[g.Name]; exists {
 					return nil, fmt.Errorf("%s: duplicate group name %q", f, g.Name)
 				}
+				customAttr, err := normalizeCustomAttributes(f, fmt.Sprintf("group %q customAttribute", g.Name), g.CustomAttribute)
+				if err != nil {
+					return nil, err
+				}
+				userCustomAttr, err := normalizeCustomAttributes(f, fmt.Sprintf("group %q userCustomAttribute", g.Name), g.UserCustomAttribute)
+				if err != nil {
+					return nil, err
+				}
+				directUserCustomAttr, err := normalizeCustomAttributes(f, fmt.Sprintf("group %q directUserCustomAttribute", g.Name), g.DirectUserCustomAttribute)
+				if err != nil {
+					return nil, err
+				}
 				groups[g.Name] = identity.Group{
-					Name:           g.Name,
-					Description:    g.Description,
-					MemberOfGroups: g.MemberOfGroups,
-					RequireMFA:     g.RequireMFA,
+					Name:                       g.Name,
+					Description:                g.Description,
+					MemberOfGroups:             g.MemberOfGroups,
+					RequireMFA:                 g.RequireMFA,
+					CustomAttributes:           customAttr,
+					UserCustomAttributes:       userCustomAttr,
+					DirectUserCustomAttributes: directUserCustomAttr,
 				}
 			}
 
@@ -119,16 +136,21 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 					return nil, err
 				}
 				rawBytes = append(rawBytes, hashSourceBytes...)
+				customAttr, err := normalizeCustomAttributes(f, fmt.Sprintf("user %q customAttribute", u.Username), u.CustomAttribute)
+				if err != nil {
+					return nil, err
+				}
 				users[u.Username] = identity.User{
-					Username:       u.Username,
-					Email:          u.Email,
-					FirstName:      u.FirstName,
-					Name:           u.Name,
-					DisplayName:    u.DisplayName,
-					Enabled:        enabled,
-					MemberOfGroups: u.MemberOfGroups,
-					MFAEnabled:     u.MFAEnabled,
-					PasswordHash:   passwordHash,
+					Username:         u.Username,
+					Email:            u.Email,
+					FirstName:        u.FirstName,
+					Name:             u.Name,
+					DisplayName:      u.DisplayName,
+					Enabled:          enabled,
+					MemberOfGroups:   u.MemberOfGroups,
+					MFAEnabled:       u.MFAEnabled,
+					PasswordHash:     passwordHash,
+					CustomAttributes: customAttr,
 				}
 			}
 
@@ -174,15 +196,19 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 	}
 
 	flattened := identity.ResolveFlattenedMemberOf(users, groups)
+	resolvedUserAttrs, resolvedGroupAttrs, attrConflicts := identity.ResolveCustomAttributes(users, groups, flattened)
 
 	return &identity.Snapshot{
-		Users:             users,
-		Groups:            groups,
-		OIDCClients:       oidcClients,
-		FlattenedMemberOf: flattened,
-		FlattenedMembers:  identity.ResolveFlattenedMembers(flattened),
-		LoadedAt:          time.Now(),
-		SourceHash:        hashBytes(rawBytes),
+		Users:                    users,
+		Groups:                   groups,
+		OIDCClients:              oidcClients,
+		FlattenedMemberOf:        flattened,
+		FlattenedMembers:         identity.ResolveFlattenedMembers(flattened),
+		ResolvedUserAttributes:   resolvedUserAttrs,
+		ResolvedGroupAttributes:  resolvedGroupAttrs,
+		CustomAttributeConflicts: attrConflicts,
+		LoadedAt:                 time.Now(),
+		SourceHash:               hashBytes(rawBytes),
 	}, nil
 }
 
@@ -219,6 +245,107 @@ func resolvePasswordHash(dir, f string, u UserSpec) (hash string, raw []byte, er
 		return hash, b, nil
 	}
 	return "", nil, nil
+}
+
+// reservedAttributeNames are the fixed LDAP attribute names this server
+// already emits itself -- every schema field plus every Samba/posix
+// attribute internal/ldapserver.UserEntry/GroupEntry can render. A
+// declared customAttribute/userCustomAttribute/directUserCustomAttribute
+// is not allowed to collide with one of these and silently fight over the
+// same wire attribute.
+var reservedAttributeNames = map[string]bool{
+	"objectclass": true, "uid": true, "cn": true, "givenname": true, "sn": true,
+	"mail": true, "memberof": true, "member": true, "description": true,
+	"sambasid": true, "sambantpassword": true, "sambaacctflags": true,
+	"sambapwdlastset": true, "sambaprimarygroupsid": true, "sambadomainname": true,
+	"sambagrouptype": true, "uidnumber": true, "gidnumber": true,
+	"homedirectory": true, "loginshell": true, "memberuid": true, "gecos": true,
+	"displayname": true,
+}
+
+// customAttributeNamePattern matches a syntactically valid LDAP attribute
+// description (RFC 4512's "keystring": a letter, then letters/digits/hyphens).
+var customAttributeNamePattern = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9-]*$`)
+
+// normalizeCustomAttributes converts a customAttribute/userCustomAttribute/
+// directUserCustomAttribute YAML map -- arbitrary JSON-ish values, since
+// sigs.k8s.io/yaml round-trips YAML through encoding/json -- into the
+// map[string][]string identity.User/identity.Group actually carry: every
+// LDAP attribute is inherently multi-valued, so a scalar is shorthand for
+// a one-element list. Rejects anything that can't be represented as an
+// LDAP attribute value (a nested map, or a list containing one) and any
+// name that isn't syntactically a valid LDAP attribute description or that
+// this server already uses for its own schema -- these are structural
+// config mistakes, not the kind of ambiguous-but-harmless conflict
+// identity.ResolveCustomAttributes handles at merge time, so (like every
+// other malformed-declaration error in this file) they fail the whole load
+// rather than being dropped and warned about.
+func normalizeCustomAttributes(f, context string, raw map[string]interface{}) (map[string][]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	out := make(map[string][]string, len(raw))
+	for name, v := range raw {
+		if !customAttributeNamePattern.MatchString(name) {
+			return nil, fmt.Errorf("%s: %s: attribute name %q is not a valid LDAP attribute name (must start with a letter, followed only by letters, digits, or hyphens)", f, context, name)
+		}
+		if reservedAttributeNames[strings.ToLower(name)] {
+			return nil, fmt.Errorf("%s: %s: attribute name %q is reserved (already used by this server's own schema)", f, context, name)
+		}
+		values, err := customAttributeValueStrings(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: %s: attribute %q: %w", f, context, name, err)
+		}
+		out[name] = values
+	}
+	return out, nil
+}
+
+// customAttributeValueStrings normalizes one declared value into the
+// []string an LDAP attribute's values actually are: a scalar becomes a
+// one-element list, a list is normalized element-by-element, and anything
+// else (a nested map, a nested list, null) is rejected as unrepresentable.
+func customAttributeValueStrings(v interface{}) ([]string, error) {
+	list, ok := v.([]interface{})
+	if !ok {
+		s, err := customAttributeScalarString(v)
+		if err != nil {
+			return nil, err
+		}
+		return []string{s}, nil
+	}
+	if len(list) == 0 {
+		return nil, fmt.Errorf("value is an empty list")
+	}
+	out := make([]string, 0, len(list))
+	for _, item := range list {
+		s, err := customAttributeScalarString(item)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, s)
+	}
+	return out, nil
+}
+
+// customAttributeScalarString formats a single JSON-ish scalar the way it
+// would appear as one LDAP attribute value. Numbers are formatted in fixed
+// (never scientific) notation, but note this still round-trips through
+// float64 (encoding/json's default number representation) -- a value that
+// needs exact large-integer precision (an ID longer than ~15 digits) or
+// that must keep leading zeros (a phone extension like "0100") should be
+// quoted as a YAML string instead of written as a bare number.
+func customAttributeScalarString(v interface{}) (string, error) {
+	switch val := v.(type) {
+	case string:
+		return val, nil
+	case bool:
+		return strconv.FormatBool(val), nil
+	case float64:
+		return strconv.FormatFloat(val, 'f', -1, 64), nil
+	default:
+		return "", fmt.Errorf("value %v is not representable as an LDAP attribute value (must be a string, number, boolean, or a list of those)", v)
+	}
 }
 
 // yamlFilesUnder recursively finds every *.yaml/*.yml file under dir, in a

@@ -150,3 +150,87 @@ func TestResolveFlattenedMembers_NoUsers(t *testing.T) {
 		t.Fatalf("expected no members, got %v", members)
 	}
 }
+
+func TestResolveCustomAttributes_UserOwnAttribute(t *testing.T) {
+	users := map[string]User{
+		"jsmith": {Username: "jsmith", CustomAttributes: map[string][]string{"phone": {"+1-555-0100"}}},
+	}
+	perUser, _, conflicts := ResolveCustomAttributes(users, nil, nil)
+	if len(conflicts) != 0 {
+		t.Fatalf("expected no conflicts, got %v", conflicts)
+	}
+	if got := perUser["jsmith"]["phone"]; len(got) != 1 || got[0] != "+1-555-0100" {
+		t.Fatalf("expected phone [+1-555-0100], got %v", got)
+	}
+}
+
+func TestResolveCustomAttributes_UserCustomAttributeIsFlattened(t *testing.T) {
+	groups := map[string]Group{
+		"engineering": {Name: "engineering", UserCustomAttributes: map[string][]string{"department": {"Engineering"}}},
+		"backend":     {Name: "backend", MemberOfGroups: []string{"engineering"}},
+	}
+	users := map[string]User{
+		"jsmith": {Username: "jsmith", MemberOfGroups: []string{"backend"}},
+	}
+	flattened := ResolveFlattenedMemberOf(users, groups)
+	perUser, _, conflicts := ResolveCustomAttributes(users, groups, flattened)
+	if len(conflicts) != 0 {
+		t.Fatalf("expected no conflicts, got %v", conflicts)
+	}
+	if got := perUser["jsmith"]["department"]; len(got) != 1 || got[0] != "Engineering" {
+		t.Fatalf("expected jsmith to inherit department via transitive membership, got %v", got)
+	}
+}
+
+func TestResolveCustomAttributes_DirectUserCustomAttributeNotInheritedTransitively(t *testing.T) {
+	groups := map[string]Group{
+		"engineering": {Name: "engineering", DirectUserCustomAttributes: map[string][]string{"badge": {"eng-direct"}}},
+		"backend":     {Name: "backend", MemberOfGroups: []string{"engineering"}},
+	}
+	users := map[string]User{
+		"jsmith": {Username: "jsmith", MemberOfGroups: []string{"backend"}}, // only a transitive member of engineering
+		"asmith": {Username: "asmith", MemberOfGroups: []string{"engineering"}},
+	}
+	flattened := ResolveFlattenedMemberOf(users, groups)
+	perUser, _, conflicts := ResolveCustomAttributes(users, groups, flattened)
+	if len(conflicts) != 0 {
+		t.Fatalf("expected no conflicts, got %v", conflicts)
+	}
+	if got := perUser["jsmith"]["badge"]; len(got) != 0 {
+		t.Fatalf("expected jsmith (transitive-only member) to NOT get directUserCustomAttribute, got %v", got)
+	}
+	if got := perUser["asmith"]["badge"]; len(got) != 1 || got[0] != "eng-direct" {
+		t.Fatalf("expected asmith (direct member) to get directUserCustomAttribute, got %v", got)
+	}
+}
+
+func TestResolveCustomAttributes_ConflictDroppedAndReported(t *testing.T) {
+	groups := map[string]Group{
+		"engineering": {Name: "engineering", UserCustomAttributes: map[string][]string{"department": {"Engineering"}}},
+		"oncall":      {Name: "oncall", UserCustomAttributes: map[string][]string{"department": {"Oncall"}}},
+	}
+	users := map[string]User{
+		"jsmith": {Username: "jsmith", MemberOfGroups: []string{"engineering", "oncall"}},
+	}
+	flattened := ResolveFlattenedMemberOf(users, groups)
+	perUser, _, conflicts := ResolveCustomAttributes(users, groups, flattened)
+	if got := perUser["jsmith"]["department"]; len(got) != 0 {
+		t.Fatalf("expected the conflicting attribute to be dropped, got %v", got)
+	}
+	if len(conflicts) != 1 {
+		t.Fatalf("expected exactly one conflict to be reported, got %v", conflicts)
+	}
+}
+
+func TestResolveCustomAttributes_GroupOwnAttributeNoMerging(t *testing.T) {
+	groups := map[string]Group{
+		"engineering": {Name: "engineering", CustomAttributes: map[string][]string{"costCenter": {"1234"}}},
+	}
+	_, perGroup, conflicts := ResolveCustomAttributes(nil, groups, nil)
+	if len(conflicts) != 0 {
+		t.Fatalf("expected no conflicts, got %v", conflicts)
+	}
+	if got := perGroup["engineering"]["costCenter"]; len(got) != 1 || got[0] != "1234" {
+		t.Fatalf("expected costCenter [1234], got %v", got)
+	}
+}

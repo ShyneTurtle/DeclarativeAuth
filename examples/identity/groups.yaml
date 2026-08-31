@@ -21,6 +21,16 @@
 #
 # A user who is only declared as a member of "oncall" (see users.yaml)
 # ends up flattened to: [oncall, backend-team, platform-team, engineering]
+#
+# Three more optional fields put arbitrary out-of-schema LDAP attributes on
+# an entry (see users.yaml's customAttribute for the value-shape rules):
+#   customAttribute            sets attributes on this GROUP's own entry.
+#   userCustomAttribute        pushes attributes onto every FLATTENED (transitive) member's
+#                               own entry instead -- see engineering/department below.
+#   directUserCustomAttribute  same, but only for DIRECT members -- see backend-team/badge below.
+# If the same attribute key ends up declared by more than one source for the
+# same user (two groups both pushing "department", say), a warning is thrown and the attribute
+# is dropped for that user to avoid ambiguity.
 
 apiVersion: declarativeauth.io/v1
 kind: GroupList
@@ -28,11 +38,22 @@ groups:
   - name: engineering
     description: "All engineering staff"
     memberOfGroups: []   # Top of the hierarchy: not a member of any other group.
+    userCustomAttribute:
+      department: "Engineering"   # Pushed onto every FLATTENED (transitive) member's own LDAP
+                                  # entry: jsmith gets this via backend-team/oncall below,
+                                  # without declaring it on jsmith directly.
+    customAttribute:
+      costCenter: "4200"    # Unlike userCustomAttribute above, this sets an attribute on
+                            # engineering's OWN entry (cn=engineering,...), not on any member's.
 
   - name: backend-team
     description: "Backend engineers"
     memberOfGroups:
       - engineering       # Every backend-team member is transitively in engineering too.
+    directUserCustomAttribute:
+      badge: "backend-direct"  # Pushed only onto DIRECT members of backend-team (jsmith, in
+                                # users.yaml). An oncall member (also transitively in
+                                # backend-team) would NOT get this.
 
   - name: platform-team
     description: "Platform/infra engineers"

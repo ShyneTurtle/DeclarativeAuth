@@ -3,6 +3,7 @@ package identity
 import (
 	"fmt"
 	"sort"
+	"strings"
 )
 
 // CycleError is returned when the group graph contains a cycle.
@@ -162,6 +163,103 @@ func ResolveFlattenedMemberOf(users map[string]User, groups map[string]Group) ma
 // LDAP member), and RFC 4519's groupOfNames requires the latter as a MUST
 // attribute, so a group entry needs it even though nothing else in this
 // codebase needs the reverse index.
+// customAttrSource labels which declared field contributed a candidate
+// value for a user's custom attribute key, purely for
+// ResolveCustomAttributes' conflict messages.
+type customAttrSource struct {
+	label  string
+	values []string
+}
+
+// ResolveCustomAttributes merges every source of custom LDAP attributes
+// into a final per-user and per-group view. A group's own entry only ever
+// gets its own Group.CustomAttributes (no merging possible: nothing else
+// targets it). A user's entry gets the union of:
+//   - their own User.CustomAttributes
+//   - every group they're transitively (flattened) a member of, via that
+//     group's UserCustomAttributes
+//   - every group they're a DIRECT member of, via that group's
+//     DirectUserCustomAttributes
+//
+// When a key is contributed by more than one of those sources for the same
+// user, there is no principled way to pick a winner, so it isn't guessed
+// at: the collision is recorded in the returned conflicts list (one
+// message per key per user, naming every contributing source) and the key
+// is dropped entirely from that user's resolved attributes. Callers must
+// treat conflicts as non-fatal -- see config.LoadIdentity, which never
+// fails a load over this, only surfaces it (config.Watcher logs each
+// entry).
+func ResolveCustomAttributes(users map[string]User, groups map[string]Group, flattenedMemberOf map[string][]string) (perUser, perGroup map[string]map[string][]string, conflicts []string) {
+	perGroup = make(map[string]map[string][]string, len(groups))
+	for name, g := range groups {
+		if len(g.CustomAttributes) > 0 {
+			perGroup[name] = g.CustomAttributes
+		}
+	}
+
+	usernames := make([]string, 0, len(users))
+	for username := range users {
+		usernames = append(usernames, username)
+	}
+	sort.Strings(usernames)
+
+	perUser = make(map[string]map[string][]string, len(users))
+	for _, username := range usernames {
+		u := users[username]
+		contributions := map[string][]customAttrSource{}
+		addContribution := func(label string, attrs map[string][]string) {
+			keys := make([]string, 0, len(attrs))
+			for k := range attrs {
+				keys = append(keys, k)
+			}
+			sort.Strings(keys)
+			for _, k := range keys {
+				contributions[k] = append(contributions[k], customAttrSource{label: label, values: attrs[k]})
+			}
+		}
+
+		addContribution("this user's own customAttribute", u.CustomAttributes)
+
+		for _, group := range flattenedMemberOf[username] {
+			if g, ok := groups[group]; ok {
+				addContribution(fmt.Sprintf("group %q's userCustomAttribute", group), g.UserCustomAttributes)
+			}
+		}
+		directGroups := append([]string{}, u.MemberOfGroups...)
+		sort.Strings(directGroups)
+		for _, group := range directGroups {
+			if g, ok := groups[group]; ok {
+				addContribution(fmt.Sprintf("group %q's directUserCustomAttribute", group), g.DirectUserCustomAttributes)
+			}
+		}
+
+		keys := make([]string, 0, len(contributions))
+		for k := range contributions {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+
+		resolved := map[string][]string{}
+		for _, k := range keys {
+			sources := contributions[k]
+			if len(sources) > 1 {
+				labels := make([]string, len(sources))
+				for i, s := range sources {
+					labels[i] = s.label
+				}
+				conflicts = append(conflicts, fmt.Sprintf("user %q: attribute %q declared by more than one source (%s) -- dropped",
+					username, k, strings.Join(labels, ", ")))
+				continue
+			}
+			resolved[k] = sources[0].values
+		}
+		if len(resolved) > 0 {
+			perUser[username] = resolved
+		}
+	}
+	return perUser, perGroup, conflicts
+}
+
 func ResolveFlattenedMembers(flattenedMemberOf map[string][]string) map[string][]string {
 	result := map[string][]string{}
 	usernames := make([]string, 0, len(flattenedMemberOf))

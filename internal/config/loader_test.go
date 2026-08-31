@@ -450,6 +450,149 @@ func TestLoadIdentity_NoPasswordHashIsFine(t *testing.T) {
 	}
 }
 
+func TestLoadIdentity_CustomAttributes(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "groups.yaml"), []byte(`
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: engineering
+    customAttribute:
+      costCenter: 1234
+    userCustomAttribute:
+      department: Engineering
+  - name: leads
+    directUserCustomAttribute:
+      badge: ["lead", "eng"]
+`), 0o644); err != nil {
+		t.Fatalf("write groups.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "users.yaml"), []byte(`
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    enabled: true
+    memberOfGroups: [engineering, leads]
+    customAttribute:
+      phone: "+1-555-0100"
+`), 0o644); err != nil {
+		t.Fatalf("write users.yaml: %v", err)
+	}
+
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(snap.CustomAttributeConflicts) != 0 {
+		t.Fatalf("expected no conflicts, got %v", snap.CustomAttributeConflicts)
+	}
+	if got := snap.ResolvedGroupAttributes["engineering"]["costCenter"]; len(got) != 1 || got[0] != "1234" {
+		t.Fatalf("expected engineering costCenter [1234], got %v", got)
+	}
+	userAttrs := snap.ResolvedUserAttributes["jsmith"]
+	if got := userAttrs["phone"]; len(got) != 1 || got[0] != "+1-555-0100" {
+		t.Fatalf("expected jsmith phone [+1-555-0100], got %v", got)
+	}
+	if got := userAttrs["department"]; len(got) != 1 || got[0] != "Engineering" {
+		t.Fatalf("expected jsmith department [Engineering] via userCustomAttribute, got %v", got)
+	}
+	if got := userAttrs["badge"]; len(got) != 2 || got[0] != "lead" || got[1] != "eng" {
+		t.Fatalf("expected jsmith badge [lead eng] via directUserCustomAttribute, got %v", got)
+	}
+}
+
+func TestLoadIdentity_CustomAttributeConflictIsNonFatal(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "groups.yaml"), []byte(`
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: engineering
+    userCustomAttribute:
+      department: Engineering
+  - name: oncall
+    userCustomAttribute:
+      department: Oncall
+`), 0o644); err != nil {
+		t.Fatalf("write groups.yaml: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "users.yaml"), []byte(`
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    enabled: true
+    memberOfGroups: [engineering, oncall]
+`), 0o644); err != nil {
+		t.Fatalf("write users.yaml: %v", err)
+	}
+
+	snap, err := LoadIdentity(dir)
+	if err != nil {
+		t.Fatalf("expected a conflict to be non-fatal, got error: %v", err)
+	}
+	if len(snap.CustomAttributeConflicts) != 1 {
+		t.Fatalf("expected exactly one conflict, got %v", snap.CustomAttributeConflicts)
+	}
+	if got := snap.ResolvedUserAttributes["jsmith"]["department"]; len(got) != 0 {
+		t.Fatalf("expected the conflicting attribute to be dropped, got %v", got)
+	}
+	// The rest of the snapshot must be entirely unaffected.
+	if len(snap.Users) != 1 || len(snap.Groups) != 2 {
+		t.Fatalf("expected the snapshot to still load normally, got %+v", snap)
+	}
+}
+
+func TestLoadIdentity_CustomAttributeReservedNameRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    enabled: true
+    customAttribute:
+      mail: "override@example.com"
+`)
+	if _, err := LoadIdentity(dir); err == nil {
+		t.Fatal("expected error for a customAttribute colliding with a reserved schema attribute name, got nil")
+	}
+}
+
+func TestLoadIdentity_CustomAttributeInvalidNameRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    enabled: true
+    customAttribute:
+      "not a valid name!": "value"
+`)
+	if _, err := LoadIdentity(dir); err == nil {
+		t.Fatal("expected error for a syntactically invalid LDAP attribute name, got nil")
+	}
+}
+
+func TestLoadIdentity_CustomAttributeNestedMapRejected(t *testing.T) {
+	dir := t.TempDir()
+	writeUsersYAML(t, dir, `
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: jsmith
+    enabled: true
+    customAttribute:
+      address:
+        street: "123 Main St"
+`)
+	if _, err := LoadIdentity(dir); err == nil {
+		t.Fatal("expected error for a nested-map customAttribute value, got nil")
+	}
+}
+
 func TestLoadIdentity_SkipsKubernetesConfigMapInternals(t *testing.T) {
 	dir := t.TempDir()
 	backing := filepath.Join(dir, "..2024_01_01_00_00_00.000000000")
