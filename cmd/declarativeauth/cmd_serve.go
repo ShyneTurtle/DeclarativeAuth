@@ -7,6 +7,7 @@ import (
 	"os/signal"
 	"syscall"
 
+	"declarativeauth/internal/buildinfo"
 	"declarativeauth/internal/config"
 	"declarativeauth/internal/logging"
 	"declarativeauth/internal/metrics"
@@ -71,6 +72,7 @@ func runServe(args []string) error {
 	snap := holder.Get()
 	logger.Info("declarativeauth ready",
 		"component", "server",
+		"version", buildinfo.Version,
 		"users", len(snap.Users),
 		"groups", len(snap.Groups),
 		"ldap_addr", cfg.LDAP.ListenAddr,

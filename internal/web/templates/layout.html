@@ -1,3 +1,8 @@
+{{/* This "layout" is only for the pre-login auth pages (login, reset,
+     MFA verify, error) -- a narrow centered card, not part of the tabbed
+     post-login app. The account page and every /admin page instead share
+     one "layout" template from internal/appshell/shell.html; see
+     mustParseShell in templates.go. */}}
 {{define "layout"}}<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -6,12 +11,16 @@
   <title>{{.Title}} - DeclarativeAuth</title>
   <link rel="stylesheet" href="/static/style.css">
 </head>
-<body>
+<body class="web-page" data-version="{{version}}">
   <main class="card">
-    <h1>{{.Title}}</h1>
+    <div class="page-title">
+      <h1>{{.Title}}</h1>
+      {{block "title-actions" .}}{{end}}
+    </div>
     {{template "content" .}}
   </main>
   <script src="/static/secure-guard.js"></script>
+  <script src="/static/boot.js"></script>
 </body>
 </html>
 {{end}}
