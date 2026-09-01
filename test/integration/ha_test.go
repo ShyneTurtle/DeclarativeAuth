@@ -75,7 +75,7 @@ func newHAInstance(t *testing.T, dsn string, rpID string, rpOrigins []string) st
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = server.Run(ctx, cfg, holder, pool, testLogger(), metrics.New()) }()
-	time.Sleep(200 * time.Millisecond)
+	waitForTCP(t, oidcAddr, 10*time.Second)
 
 	return "http://" + oidcAddr
 }
@@ -390,7 +390,7 @@ func startHAInstanceAt(t *testing.T, dsn, oidcAddr, rpID string, rpOrigins []str
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = server.Run(ctx, cfg, holder, pool, testLogger(), metrics.New()) }()
-	time.Sleep(200 * time.Millisecond)
+	waitForTCP(t, oidcAddr, 10*time.Second)
 	return "http://" + oidcAddr
 }
 

@@ -155,7 +155,7 @@ func startFullServerWithSMTPFixture(t *testing.T, identityFixture string) (issue
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = server.Run(ctx, cfg, holder, pool, testLogger(), metrics.New()) }()
-	time.Sleep(200 * time.Millisecond)
+	waitForTCP(t, oidcAddr, 10*time.Second)
 
 	return "http://" + oidcAddr, holder
 }
