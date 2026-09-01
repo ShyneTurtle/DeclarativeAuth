@@ -13,7 +13,15 @@ WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
-RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath -ldflags="-s -w" -o /out/declarativeauth ./cmd/declarativeauth
+# VERSION defaults to "dev" for local/untagged builds; CI passes the git tag
+# or short SHA via --build-arg (see .github/workflows/docker-build.yaml).
+# Baked in with -X rather than read at runtime so `declarativeauth serve`'s
+# startup log and the admin/web UI's console.info both show a real build
+# identifier with zero runtime config needed.
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
+    -ldflags="-s -w -X declarativeauth/internal/buildinfo.Version=${VERSION}" \
+    -o /out/declarativeauth ./cmd/declarativeauth
 # Pre-create the identity mountpoint here, where a shell exists, so it
 # lands in the final image with known-good permissions (0755: traversable
 # by the "nonroot" user the final stage runs as). The distroless base below

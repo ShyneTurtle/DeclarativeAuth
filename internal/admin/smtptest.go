@@ -6,26 +6,38 @@ import (
 	"declarativeauth/internal/web"
 )
 
-type smtpTestData struct {
+// adminHomeData backs the merged "Admin" page: the email test form and the
+// group graph, stacked on one page instead of two separate tab-switched
+// ones -- both are small, low-traffic diagnostics, and splitting them
+// across pages bought nothing but an extra click and an extra nav item.
+type adminHomeData struct {
 	pageData
 	CSRFToken string
 	Result    string
 	Error     string
+	graphViewData
 }
 
-func (h *Handlers) handleSMTPTest(w http.ResponseWriter, r *http.Request, username string) {
+// handleAdmin serves the "Admin" tab: an email-test form above the group
+// inheritance graph. It's still reachable at both /admin/smtp-test (the
+// email form's POST target) and /admin/graph (kept as a stable link for
+// anything that already points at it) -- see NewMux.
+func (h *Handlers) handleAdmin(w http.ResponseWriter, r *http.Request, username string) {
 	secure := h.TrustedProxies.IsForwardedHTTPS(r)
-	data := smtpTestData{pageData: pageData{Title: "SMTP test", ConfigEditorEnabled: h.ConfigEditorEnabled}}
+	data := adminHomeData{
+		pageData:      newPageData("Admin", "admin", h.ConfigEditorEnabled),
+		graphViewData: computeGraphData(h.Snapshot()),
+	}
 
 	switch r.Method {
 	case http.MethodGet:
 		data.CSRFToken = web.IssueCSRFToken(w, r, secure)
-		render(w, smtpTestTmpl, data)
+		render(w, adminHomeTmpl, data)
 	case http.MethodPost:
 		data.CSRFToken = web.IssueCSRFToken(w, r, secure)
 		if !web.ValidCSRF(r) {
 			data.Error = "Your session expired, please try again."
-			render(w, smtpTestTmpl, data)
+			render(w, adminHomeTmpl, data)
 			return
 		}
 		to := r.FormValue("to")
@@ -42,7 +54,7 @@ func (h *Handlers) handleSMTPTest(w http.ResponseWriter, r *http.Request, userna
 		} else {
 			data.Result = "Test email sent to " + to + "."
 		}
-		render(w, smtpTestTmpl, data)
+		render(w, adminHomeTmpl, data)
 	default:
 		w.WriteHeader(http.StatusMethodNotAllowed)
 	}

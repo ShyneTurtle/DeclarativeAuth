@@ -26,9 +26,13 @@ type Handlers struct {
 	StaticFS       http.Handler
 
 	// Snapshot and AdminGroup back the home page: the user's declared
-	// name/email, and whether to show a link to /admin.
-	Snapshot   func() *identity.Snapshot
-	AdminGroup string
+	// name/email, and whether to show the admin tabs. ConfigEditorEnabled
+	// mirrors admin.Handlers.ConfigEditorEnabled (same
+	// DECLARATIVEAUTH_ADMIN_UI_CONFIG_EDITOR_ENABLED source) so the "Config
+	// editor" tab can be greyed out instead of just omitted.
+	Snapshot            func() *identity.Snapshot
+	AdminGroup          string
+	ConfigEditorEnabled bool
 
 	// Passkeys, if non-nil, enables the passkey-management section of the
 	// home page (nil when DECLARATIVEAUTH_WEBAUTHN_ENABLED is false or
@@ -63,8 +67,23 @@ func (h *Handlers) NewMux() *http.ServeMux {
 	mux.HandleFunc("/", h.handleHome)
 	mux.HandleFunc("/login", h.handleLogin)
 	mux.HandleFunc("/logout", h.handleLogout)
-	mux.Handle("/static/", http.FileServer(http.FS(assetsFS)))
+	mux.Handle("/static/", cacheStatic(http.FileServer(http.FS(assetsFS))))
 	return mux
+}
+
+// cacheStatic marks embedded static assets as cacheable. They're compiled
+// into the binary (see templates.go's go:embed), so a given deploy always
+// serves byte-identical content at a given path -- but a new deploy can
+// change that content, so this stops well short of "immutable": a
+// revalidate-on-every-load max-age keeps browsers from ever needing a full
+// re-download unless the file actually changed (embed.FS's fixed modtime
+// makes the FileServer's built-in If-Modified-Since handling return 304s
+// consistently within one running binary).
+func cacheStatic(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Cache-Control", "public, max-age=3600, must-revalidate")
+		next.ServeHTTP(w, r)
+	})
 }
 
 type passkeyView struct {
@@ -75,17 +94,23 @@ type passkeyView struct {
 }
 
 type homePageData struct {
-	Title           string
-	Username        string
-	DisplayName     string
-	Email           string
-	IsAdmin         bool
-	CSRFToken       string
-	PasskeysEnabled bool
-	Passkeys        []passkeyView
-	MFARequired     bool // declaratively required: the toggle below is hidden, not just disabled
-	MFASelfEnabled  bool
-	Error           string
+	Title    string
+	Username string
+	// Active is always "account" -- this field exists (rather than the
+	// template hardcoding "account") only because shell.html is shared
+	// with admin.pageData, which sets it to "admin"/"config" instead; see
+	// internal/appshell.
+	Active              string
+	DisplayName         string
+	Email               string
+	IsAdmin             bool
+	ConfigEditorEnabled bool
+	CSRFToken           string
+	PasskeysEnabled     bool
+	Passkeys            []passkeyView
+	MFARequired         bool // declaratively required: the toggle below is hidden, not just disabled
+	MFASelfEnabled      bool
+	Error               string
 }
 
 // handleHome serves the user's profile page: name/email, an admin-panel
@@ -149,16 +174,18 @@ func (h *Handlers) handleHome(w http.ResponseWriter, r *http.Request) {
 	}
 
 	render(w, homeTmpl, homePageData{
-		Title:           "My account",
-		Username:        username,
-		DisplayName:     u.DisplayNameOrDefault(),
-		Email:           u.Email,
-		IsAdmin:         h.AdminGroup != "" && snap.IsMemberOf(username, h.AdminGroup),
-		CSRFToken:       csrf,
-		PasskeysEnabled: h.Passkeys != nil,
-		Passkeys:        views,
-		MFARequired:     mfaRequired,
-		MFASelfEnabled:  mfaSelfEnabled,
+		Title:               "My account",
+		Username:            username,
+		Active:              "account",
+		DisplayName:         u.DisplayNameOrDefault(),
+		Email:               u.Email,
+		IsAdmin:             h.AdminGroup != "" && snap.IsMemberOf(username, h.AdminGroup),
+		ConfigEditorEnabled: h.ConfigEditorEnabled,
+		CSRFToken:           csrf,
+		PasskeysEnabled:     h.Passkeys != nil,
+		Passkeys:            views,
+		MFARequired:         mfaRequired,
+		MFASelfEnabled:      mfaSelfEnabled,
 	})
 }
 
@@ -319,6 +346,11 @@ func sanitizeReturnTo(v string) string {
 	return v
 }
 
+// render executes tmpl's "layout" template -- for most pages that's this
+// package's own narrow auth-page shell (templates/layout.html), but for
+// homeTmpl specifically it's the shared tabbed shell from internal/appshell
+// (see mustParseShell), since each *template.Template built by mustParse/
+// mustParseShell only ever has one "layout" definition in it.
 func render(w http.ResponseWriter, tmpl *template.Template, data any) {
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	_ = tmpl.ExecuteTemplate(w, "layout", data)

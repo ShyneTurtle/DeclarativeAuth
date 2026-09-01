@@ -8,7 +8,13 @@
   "use strict";
 
   var LABELS = ["very weak", "weak", "fair", "good", "strong"];
-  var COLORS = ["#b91c1c", "#d97706", "#d97706", "#65a30d", "#16a34a"];
+  // Colors come from the shared CSS custom properties (see style.css)
+  // rather than a second hardcoded copy here, so the palette only has one
+  // place to change.
+  var COLOR_VARS = ["--meter-weak", "--meter-fair", "--meter-fair", "--meter-good", "--meter-strong"];
+  function strengthColor(score) {
+    return getComputedStyle(document.documentElement).getPropertyValue(COLOR_VARS[score]).trim();
+  }
   var SEQUENCE_GUESS_BITS = 6.0;
   var MIN_SEQUENCE_RUN = 4;
 
@@ -120,7 +126,7 @@
       var score = strength(passwordInput.value);
       var pct = passwordInput.value ? (score + 1) * 20 : 0;
       bar.style.width = pct + "%";
-      bar.style.background = COLORS[score];
+      bar.style.background = strengthColor(score);
       if (!passwordInput.value) {
         label.textContent = " ";
       } else {

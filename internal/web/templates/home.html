@@ -1,28 +1,27 @@
 {{define "content"}}
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{if .Error}}<p class="error">{{icon "warning"}}{{.Error}}</p>{{end}}
 
-<p><strong>{{.DisplayName}}</strong> ({{.Username}})<br>{{.Email}}</p>
+<p><strong>{{.DisplayName}}</strong> ({{.Username}})<br><span class="muted">{{.Email}}</span></p>
 
-<p>
-  <a href="/logout">Log out</a>
-  {{if .IsAdmin}} &middot; <a href="/admin">Admin</a>{{end}}
-</p>
-
-<h2>Two-factor authentication (email)</h2>
-{{if .MFARequired}}
-<p>Required for your account by policy.</p>
-{{else}}
-<p>Status: {{if .MFASelfEnabled}}Enabled{{else}}Disabled{{end}}</p>
-<form method="post" action="/account/mfa">
+<div class="mfa-row">
+  <button type="submit" form="mfa-form" class="switch {{if or .MFARequired .MFASelfEnabled}}on{{else}}off{{end}}"
+    aria-pressed="{{if or .MFARequired .MFASelfEnabled}}true{{else}}false{{end}}"
+    {{if .MFARequired}}disabled title="Required by policy for your account or group -- can't be turned off here."{{end}}>
+    <span class="switch-track"><span class="switch-thumb"></span></span>
+  </button>
+  <div>
+    <h2>{{icon "shield"}} Two-factor authentication</h2>
+    <p class="muted">{{if .MFARequired}}Enabled (required by policy){{else if .MFASelfEnabled}}Enabled{{else}}Disabled{{end}}</p>
+  </div>
+</div>
+<form id="mfa-form" method="post" action="/account/mfa" hidden>
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <input type="hidden" name="enabled" value="{{if .MFASelfEnabled}}false{{else}}true{{end}}">
-  <button type="submit">{{if .MFASelfEnabled}}Disable{{else}}Enable{{end}}</button>
 </form>
-{{end}}
 
 {{if .PasskeysEnabled}}
-<h2>Passkeys</h2>
-<p>Passkeys let you log in without a password, using a device's built-in authenticator (fingerprint, face, security key, or password manager).</p>
+<h2>{{icon "key"}} Passkeys</h2>
+<p class="muted">Log in without a password using your device's fingerprint, face, security key, or password manager.</p>
 
 {{if .Passkeys}}
 <table>
@@ -37,7 +36,7 @@
       <form method="post" action="/webauthn/register/delete" onsubmit="return confirm('Remove this passkey?');">
         <input type="hidden" name="csrf_token" value="{{$.CSRFToken}}">
         <input type="hidden" name="credential_id" value="{{.IDBase64}}">
-        <button type="submit">Remove</button>
+        <button type="submit" class="secondary danger small">{{icon "trash"}}Remove</button>
       </form>
     </td>
   </tr>
@@ -45,10 +44,10 @@
   </tbody>
 </table>
 {{else}}
-<p>No passkeys registered yet.</p>
+<p class="muted">No passkeys registered yet.</p>
 {{end}}
 
-<button id="add-passkey" type="button" hidden>Add a passkey</button>
+<button id="add-passkey" type="button" class="secondary" hidden>{{icon "plus"}}Add a passkey</button>
 <p id="passkey-status" role="status"></p>
 
 <script src="/static/webauthn.js"></script>

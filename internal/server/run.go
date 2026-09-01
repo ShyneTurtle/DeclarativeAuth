@@ -212,15 +212,16 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		mfaChallenges := &store.EmailChallengeStore{Pool: pool}
 		mfaPolicy := &auth.MFAPolicy{Snapshot: holder.Get, Settings: mfaSettings}
 		webHandlers := &web.Handlers{
-			Authenticator:  authenticator,
-			Sessions:       sessions,
-			TrustedProxies: trustedProxies,
-			Audit:          auditStore,
-			Snapshot:       holder.Get,
-			AdminGroup:     cfg.AdminUI.AdminGroup,
-			MFAPolicy:      mfaPolicy,
-			MFAChallenges:  mfaChallenges,
-			MFAMail:        mailClient,
+			Authenticator:       authenticator,
+			Sessions:            sessions,
+			TrustedProxies:      trustedProxies,
+			Audit:               auditStore,
+			Snapshot:            holder.Get,
+			AdminGroup:          cfg.AdminUI.AdminGroup,
+			ConfigEditorEnabled: cfg.AdminUI.ConfigEditor.Enabled,
+			MFAPolicy:           mfaPolicy,
+			MFAChallenges:       mfaChallenges,
+			MFAMail:             mailClient,
 			OnLoginResult: func(success bool, d time.Duration) {
 				if reg == nil {
 					return

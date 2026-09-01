@@ -13,24 +13,9 @@ import (
 	"declarativeauth/internal/web"
 )
 
-// fileNameFor maps a URL fileKey ("users"|"groups"|"oidc-clients") to its
-// on-disk file name under h.IdentityPath.
-func fileNameFor(fileKey string) (string, bool) {
-	switch fileKey {
-	case "users":
-		return "users.yaml", true
-	case "groups":
-		return "groups.yaml", true
-	case "oidc-clients":
-		return "oidc-clients.yaml", true
-	default:
-		return "", false
-	}
-}
-
-// validateEdit re-validates fileKey's proposed content against everything
+// validateEdit re-validates relPath's proposed content against everything
 // else currently in the identity directory, by copying the *entire* real
-// identity tree into a scratch directory, overlaying fileKey's proposed
+// identity tree into a scratch directory, overlaying relPath's proposed
 // content on top, and running it through the exact same
 // internal/config.LoadIdentity path used at startup/reload/CLI
 // validate-config -- no separate/divergent validation logic to keep in
@@ -40,7 +25,7 @@ func fileNameFor(fileKey string) (string, bool) {
 // passwordHashFile reference needs the same directory layout during
 // live-validation as it has for the real running server, or it would
 // report a spurious "file not found".
-func (h *Handlers) validateEdit(fileKey, content string) error {
+func (h *Handlers) validateEdit(relPath, content string) error {
 	tmpDir, err := os.MkdirTemp("", "declarativeauth-edit-*")
 	if err != nil {
 		return err
@@ -51,8 +36,11 @@ func (h *Handlers) validateEdit(fileKey, content string) error {
 		return fmt.Errorf("preparing validation scratch copy: %w", err)
 	}
 
-	name, _ := fileNameFor(fileKey)
-	if err := os.WriteFile(filepath.Join(tmpDir, name), []byte(content), 0o644); err != nil {
+	target, err := config.ResolveIdentityFile(tmpDir, relPath)
+	if err != nil {
+		return err
+	}
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
 		return err
 	}
 
@@ -85,9 +73,9 @@ func copyDirTree(src, dst string) error {
 
 type configEditorData struct {
 	pageData
-	FileKey     string
-	FileKeyJS   template.JS
-	FileName    string
+	Files       []config.IdentityFile
+	FilePath    string
+	FilePathJS  template.JS
 	Content     string
 	CSRFToken   string
 	CSRFTokenJS template.JS
@@ -95,47 +83,78 @@ type configEditorData struct {
 	Success     bool
 }
 
-func (h *Handlers) handleConfigEditorUsers(w http.ResponseWriter, r *http.Request, username string) {
-	h.renderEditor(w, r, "users")
-}
-
-func (h *Handlers) handleConfigEditorGroups(w http.ResponseWriter, r *http.Request, username string) {
-	h.renderEditor(w, r, "groups")
-}
-
-func (h *Handlers) handleConfigEditorOIDCClients(w http.ResponseWriter, r *http.Request, username string) {
-	h.renderEditor(w, r, "oidc-clients")
-}
-
-// oidcClientsStarter is shown when oidc-clients.yaml doesn't exist on disk
-// yet (it's optional -- see internal/config.LoadIdentity), so the editor
-// has something valid to start from instead of a 500.
-const oidcClientsStarter = `apiVersion: declarativeauth.io/v1
-kind: OIDCClientList
-clients: []
-`
-
-func (h *Handlers) renderEditor(w http.ResponseWriter, r *http.Request, fileKey string) {
-	name, _ := fileNameFor(fileKey)
-	body, err := os.ReadFile(filepath.Join(h.IdentityPath, name))
-	if err != nil {
-		if fileKey == "oidc-clients" && os.IsNotExist(err) {
-			body = []byte(oidcClientsStarter)
-		} else {
-			http.Error(w, "reading "+name+": "+err.Error(), http.StatusInternalServerError)
-			return
+// knownFile reports whether relPath is one of the files ListIdentityFiles
+// actually discovered -- i.e. the operator is editing/saving/downloading a
+// real declarative config file, not an arbitrary path that merely resolves
+// somewhere inside the identity directory.
+func knownFile(files []config.IdentityFile, relPath string) bool {
+	for _, f := range files {
+		if f.Path == relPath {
+			return true
 		}
 	}
+	return false
+}
+
+// handleConfigIndex serves /admin/config: it has no file of its own to
+// show, so it redirects to whichever declarative config file sorts first
+// -- there's no more fixed "users.yaml" to default to now that files are
+// discovered dynamically (see config.ListIdentityFiles), same as
+// LoadIdentity itself no longer assumes any particular file name exists.
+func (h *Handlers) handleConfigIndex(w http.ResponseWriter, r *http.Request, username string) {
+	files, err := config.ListIdentityFiles(h.IdentityPath)
+	if err != nil {
+		http.Error(w, "listing config files: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if len(files) == 0 {
+		h.renderEditor(w, r, "", files, "", "", false)
+		return
+	}
+	http.Redirect(w, r, "/admin/config/edit/"+files[0].Path, http.StatusSeeOther)
+}
+
+func (h *Handlers) handleConfigEdit(w http.ResponseWriter, r *http.Request, username string) {
+	relPath := r.PathValue("file")
+	files, err := config.ListIdentityFiles(h.IdentityPath)
+	if err != nil {
+		http.Error(w, "listing config files: "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !knownFile(files, relPath) {
+		http.NotFound(w, r)
+		return
+	}
+	target, err := config.ResolveIdentityFile(h.IdentityPath, relPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	body, err := os.ReadFile(target)
+	if err != nil {
+		http.Error(w, "reading "+relPath+": "+err.Error(), http.StatusInternalServerError)
+		return
+	}
+	h.renderEditor(w, r, relPath, files, string(body), "", false)
+}
+
+func (h *Handlers) renderEditor(w http.ResponseWriter, r *http.Request, relPath string, files []config.IdentityFile, content, errMsg string, success bool) {
 	secure := h.TrustedProxies.IsForwardedHTTPS(r)
 	csrf := web.IssueCSRFToken(w, r, secure)
+	title := "Config editor"
+	if relPath != "" {
+		title = "Config editor: " + relPath
+	}
 	render(w, configEditorTmpl, configEditorData{
-		pageData:    pageData{Title: "Config editor: " + name, ConfigEditorEnabled: h.ConfigEditorEnabled},
-		FileKey:     fileKey,
-		FileKeyJS:   jsString(fileKey),
-		FileName:    name,
-		Content:     string(body),
+		pageData:    newPageData(title, "config", h.ConfigEditorEnabled),
+		Files:       files,
+		FilePath:    relPath,
+		FilePathJS:  jsString(relPath),
+		Content:     content,
 		CSRFToken:   csrf,
 		CSRFTokenJS: jsString(csrf),
+		Error:       errMsg,
+		Success:     success,
 	})
 }
 
@@ -144,13 +163,14 @@ func (h *Handlers) handleConfigValidate(w http.ResponseWriter, r *http.Request, 
 		w.WriteHeader(http.StatusForbidden)
 		return
 	}
-	fileKey := r.FormValue("fileKey")
-	if _, ok := fileNameFor(fileKey); !ok {
+	relPath := r.FormValue("file")
+	files, err := config.ListIdentityFiles(h.IdentityPath)
+	if err != nil || !knownFile(files, relPath) {
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 	content := r.FormValue("content")
-	err := h.validateEdit(fileKey, content)
+	err = h.validateEdit(relPath, content)
 
 	w.Header().Set("Content-Type", "application/json")
 	if err != nil {
@@ -160,85 +180,69 @@ func (h *Handlers) handleConfigValidate(w http.ResponseWriter, r *http.Request, 
 	_ = json.NewEncoder(w).Encode(map[string]any{"valid": true})
 }
 
-func (h *Handlers) handleConfigSaveUsers(w http.ResponseWriter, r *http.Request, username string) {
-	h.handleConfigSave(w, r, "users")
-}
-
-func (h *Handlers) handleConfigSaveGroups(w http.ResponseWriter, r *http.Request, username string) {
-	h.handleConfigSave(w, r, "groups")
-}
-
-func (h *Handlers) handleConfigSaveOIDCClients(w http.ResponseWriter, r *http.Request, username string) {
-	h.handleConfigSave(w, r, "oidc-clients")
-}
-
-func (h *Handlers) handleConfigSave(w http.ResponseWriter, r *http.Request, fileKey string) {
+func (h *Handlers) handleConfigSave(w http.ResponseWriter, r *http.Request, username string) {
 	if r.Method != http.MethodPost {
 		w.WriteHeader(http.StatusMethodNotAllowed)
 		return
 	}
-	name, _ := fileNameFor(fileKey)
+	relPath := r.PathValue("file")
 	content := r.FormValue("content")
-	secure := h.TrustedProxies.IsForwardedHTTPS(r)
 
-	data := configEditorData{
-		pageData: pageData{Title: "Config editor: " + name, ConfigEditorEnabled: h.ConfigEditorEnabled},
-		FileKey:  fileKey, FileKeyJS: jsString(fileKey), FileName: name, Content: content,
-	}
-	if !web.ValidCSRF(r) {
-		data.Error = "Your session expired, please try again."
-		data.CSRFToken = web.IssueCSRFToken(w, r, secure)
-		data.CSRFTokenJS = jsString(data.CSRFToken)
-		render(w, configEditorTmpl, data)
+	files, err := config.ListIdentityFiles(h.IdentityPath)
+	if err != nil {
+		http.Error(w, "listing config files: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if err := h.validateEdit(fileKey, content); err != nil {
-		data.Error = "Not saved -- validation failed: " + err.Error()
-		data.CSRFToken = web.IssueCSRFToken(w, r, secure)
-		data.CSRFTokenJS = jsString(data.CSRFToken)
-		render(w, configEditorTmpl, data)
+	if !knownFile(files, relPath) {
+		http.NotFound(w, r)
+		return
+	}
+
+	if !web.ValidCSRF(r) {
+		h.renderEditor(w, r, relPath, files, content, "Your session expired, please try again.", false)
+		return
+	}
+	if err := h.validateEdit(relPath, content); err != nil {
+		h.renderEditor(w, r, relPath, files, content, "Not saved -- validation failed: "+err.Error(), false)
+		return
+	}
+	target, err := config.ResolveIdentityFile(h.IdentityPath, relPath)
+	if err != nil {
+		h.renderEditor(w, r, relPath, files, content, "Invalid file path: "+err.Error(), false)
 		return
 	}
 	// Write directly to the mounted identity file; the existing
 	// fsnotify-based hot-reload watcher picks this up as a normal file
 	// write, same as any external ConfigMap update.
-	if err := os.WriteFile(filepath.Join(h.IdentityPath, name), []byte(content), 0o644); err != nil {
-		data.Error = "Failed to write file: " + err.Error()
-		data.CSRFToken = web.IssueCSRFToken(w, r, secure)
-		data.CSRFTokenJS = jsString(data.CSRFToken)
-		render(w, configEditorTmpl, data)
+	if err := os.WriteFile(target, []byte(content), 0o644); err != nil {
+		h.renderEditor(w, r, relPath, files, content, "Failed to write file: "+err.Error(), false)
 		return
 	}
-	data.Success = true
-	data.CSRFToken = web.IssueCSRFToken(w, r, secure)
-	data.CSRFTokenJS = jsString(data.CSRFToken)
-	render(w, configEditorTmpl, data)
+	h.renderEditor(w, r, relPath, files, content, "", true)
 }
 
-func (h *Handlers) handleConfigDownloadUsers(w http.ResponseWriter, r *http.Request, username string) {
-	h.handleConfigDownload(w, r, "users")
-}
-
-func (h *Handlers) handleConfigDownloadGroups(w http.ResponseWriter, r *http.Request, username string) {
-	h.handleConfigDownload(w, r, "groups")
-}
-
-func (h *Handlers) handleConfigDownloadOIDCClients(w http.ResponseWriter, r *http.Request, username string) {
-	h.handleConfigDownload(w, r, "oidc-clients")
-}
-
-func (h *Handlers) handleConfigDownload(w http.ResponseWriter, r *http.Request, fileKey string) {
-	name, _ := fileNameFor(fileKey)
-	body, err := os.ReadFile(filepath.Join(h.IdentityPath, name))
+func (h *Handlers) handleConfigDownload(w http.ResponseWriter, r *http.Request, username string) {
+	relPath := r.PathValue("file")
+	files, err := config.ListIdentityFiles(h.IdentityPath)
 	if err != nil {
-		if fileKey == "oidc-clients" && os.IsNotExist(err) {
-			body = []byte(oidcClientsStarter)
-		} else {
-			http.Error(w, err.Error(), http.StatusInternalServerError)
-			return
-		}
+		http.Error(w, "listing config files: "+err.Error(), http.StatusInternalServerError)
+		return
 	}
-	w.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	if !knownFile(files, relPath) {
+		http.NotFound(w, r)
+		return
+	}
+	target, err := config.ResolveIdentityFile(h.IdentityPath, relPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	body, err := os.ReadFile(target)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Disposition", `attachment; filename="`+filepath.Base(relPath)+`"`)
 	w.Header().Set("Content-Type", "application/x-yaml")
 	_, _ = w.Write(body)
 }

@@ -1,0 +1,143 @@
+{{define "content"}}
+{{if .Result}}<p class="success">{{icon "check"}}{{.Result}}</p>{{end}}
+{{if .Error}}<p class="error">{{icon "warning"}}{{.Error}}</p>{{end}}
+
+<h2>{{icon "mail"}} Email test</h2>
+<p class="muted">Send a test email through the configured SMTP server to confirm it's set up correctly.</p>
+<form method="post" action="/admin/smtp-test">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <div class="field-row">
+    <label>Send to
+      <input type="email" name="to" required>
+    </label>
+    <button type="submit">{{icon "send"}}Send test email</button>
+  </div>
+</form>
+
+<h2>{{icon "graph"}} Group graph</h2>
+<p class="muted">{{.GroupCount}} groups, {{.EdgeCount}} inheritance edges. Click a group to see its members and inheritance.</p>
+<div class="graph-wrap">
+  {{.SVG}}
+</div>
+
+<div id="group-detail" class="group-detail" hidden>
+  <div class="group-detail-header">
+    <h3 id="gd-name"></h3>
+    <span id="gd-mfa-badge" class="badge-mfa" hidden>{{icon "shield"}}Requires MFA</span>
+    <button type="button" class="btn secondary small" id="gd-close">{{icon "close"}}Close</button>
+  </div>
+  <div id="gd-body"></div>
+</div>
+
+<script>
+(function () {
+  const details = {{.DetailsJSON}};
+  const panel = document.getElementById('group-detail');
+  const nameEl = document.getElementById('gd-name');
+  const mfaBadge = document.getElementById('gd-mfa-badge');
+  const body = document.getElementById('gd-body');
+
+  function esc(s) {
+    return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  }
+
+  // A path like ["jsmith","oncall","backend-team","engineering"] becomes
+  // "jsmith -> oncall -> backend-team -> engineering", each hop shown as a
+  // chip; any hop that's itself a group (i.e. has an entry in `details`) is
+  // clickable to jump the whole panel to that group instead. When the path
+  // starts at a user (firstIsUser), that first chip gets the same neutral
+  // chip-user styling a direct user membership gets, instead of the
+  // group-colored chip -- the arrows already show it's reached by
+  // inheritance, so the color's job is just "user vs group", not "direct
+  // vs inherited".
+  function pathHtml(path, firstIsUser) {
+    return path.map(function (step, i) {
+      var isTarget = i === path.length - 1;
+      var isUserHop = firstIsUser && i === 0;
+      var cls = isUserHop ? 'chip chip-user' : 'chip' + (isTarget ? ' chip-target' : '');
+      var attr = !isUserHop && details[step] ? ' data-group="' + esc(step) + '"' : '';
+      return '<span class="' + cls + '"' + attr + '>' + esc(step) + '</span>';
+    }).join('<span class="chip-arrow">&rarr;</span>');
+  }
+
+  // One row for a member/ancestor entry. A path of length 2 is just
+  // [item, group] -- a direct membership, nothing to explain -- so it's
+  // shown as a single plain chip; anything longer is an inherited
+  // membership and gets the full path breadcrumb showing how it got there.
+  function memberRow(e, isGroup) {
+    if (e.path.length <= 2) {
+      var cls = isGroup ? 'chip' : 'chip chip-user';
+      var attr = isGroup ? ' data-group="' + esc(e.name) + '"' : '';
+      return '<li><span class="' + cls + '"' + attr + '>' + esc(e.name) + '</span></li>';
+    }
+    return '<li>' + pathHtml(e.path, !isGroup) + '</li>';
+  }
+
+  function listOrNone(items, render) {
+    if (!items || items.length === 0) return '<p class="muted">None.</p>';
+    return '<ul class="gd-list">' + items.map(render).join('') + '</ul>';
+  }
+
+  function showGroup(name) {
+    var d = details[name];
+    if (!d) return;
+    // bfsPaths (Go) leaves these nil -- JSON null -- when a group has no
+    // ancestors/subgroups at all, rather than an empty array; normalize
+    // here once instead of null-checking every access below.
+    d.subgroups = d.subgroups || [];
+    d.users = d.users || [];
+    d.flattenedMemberOf = d.flattenedMemberOf || [];
+
+    nameEl.textContent = d.name;
+    mfaBadge.hidden = !d.requireMFA;
+
+    var html = '';
+    html += '<h4>Belongs to (' + d.flattenedMemberOf.length + ')</h4>';
+    html += listOrNone(d.flattenedMemberOf, function (e) { return memberRow(e, true); });
+
+    html += '<h4>Subgroups (' + d.subgroups.length + ')</h4>';
+    html += listOrNone(d.subgroups, function (e) { return memberRow(e, true); });
+
+    html += '<h4>Users (' + d.users.length + ')</h4>';
+    html += listOrNone(d.users, function (e) { return memberRow(e, false); });
+
+    body.innerHTML = html;
+    panel.hidden = false;
+    panel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  }
+
+  // Hovering (or focusing) a node lights up its direct edges too, not just
+  // the node itself -- edges connected via either data-child or
+  // data-parent (see graph.go's writeCurvedEdge), since a group can be on
+  // either end. The arrowhead is a <marker>, referenced by id rather than
+  // styled by the edge's own class, so it has to be swapped by attribute
+  // here rather than just toggling a CSS class.
+  function setEdgeHighlight(name, on) {
+    var edges = document.querySelectorAll(
+      '.group-edge[data-child="' + CSS.escape(name) + '"], .group-edge[data-parent="' + CSS.escape(name) + '"]'
+    );
+    edges.forEach(function (edge) {
+      edge.classList.toggle('group-edge-active', on);
+      edge.setAttribute('marker-end', on ? 'url(#arrow-active)' : 'url(#arrow)');
+    });
+  }
+
+  document.querySelectorAll('.group-node-hit').forEach(function (g) {
+    var name = g.getAttribute('data-group');
+    g.addEventListener('click', () => showGroup(name));
+    g.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); showGroup(name); }
+    });
+    g.addEventListener('mouseenter', () => setEdgeHighlight(name, true));
+    g.addEventListener('mouseleave', () => setEdgeHighlight(name, false));
+    g.addEventListener('focus', () => setEdgeHighlight(name, true));
+    g.addEventListener('blur', () => setEdgeHighlight(name, false));
+  });
+  body.addEventListener('click', function (e) {
+    const chip = e.target.closest('[data-group]');
+    if (chip) showGroup(chip.getAttribute('data-group'));
+  });
+  document.getElementById('gd-close').addEventListener('click', () => { panel.hidden = true; });
+})();
+</script>
+{{end}}

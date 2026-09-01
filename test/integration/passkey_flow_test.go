@@ -72,7 +72,7 @@ func startFullServerWithWebAuthn(t *testing.T) (issuer string, rp virtualwebauth
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 	go func() { _ = server.Run(ctx, cfg, holder, pool, testLogger(), metrics.New()) }()
-	time.Sleep(200 * time.Millisecond)
+	waitForTCP(t, oidcAddr, 10*time.Second)
 
 	return "http://" + oidcAddr, virtualwebauthn.RelyingParty{
 		Name: cfg.WebAuthn.RPDisplayName, ID: cfg.WebAuthn.RPID, Origin: cfg.WebAuthn.RPOrigins[0],

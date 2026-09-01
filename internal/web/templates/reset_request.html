@@ -1,5 +1,5 @@
 {{define "content"}}
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
+{{if .Error}}<p class="error">{{icon "warning"}}{{.Error}}</p>{{end}}
 <form method="post" action="/reset">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <input type="hidden" name="return_to" value="{{.ReturnTo}}">

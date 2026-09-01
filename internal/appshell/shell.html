@@ -1,0 +1,49 @@
+{{/* shell.html is the ONE post-login page shell -- shared verbatim by
+     internal/web (the account page) and internal/admin (every /admin
+     page) by embedding this same file, instead of each package keeping
+     its own near-identical copy that drifts out of sync every time only
+     one of them gets edited. Both packages parse this into their template
+     tree under the name "layout" alongside their own page-specific
+     content template, so {{template "content" .}} below resolves to
+     whichever page is being rendered.
+
+     Both packages' page-data types must expose the same fields this file
+     reads: Title, Active ("account", "admin", or "config"), IsAdmin, and
+     ConfigEditorEnabled. The account page sets IsAdmin from the viewer's
+     actual group membership (hiding the Admin/Config editor tabs for a
+     non-admin); every /admin page hardcodes IsAdmin true since reaching
+     one at all already required admin-group membership (see
+     admin.Handlers.gate). */}}
+{{define "layout"}}<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{.Title}} - DeclarativeAuth</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-version="{{version}}">
+  <div class="app-shell">
+    <div class="tabbed-card">
+      <div class="tabs">
+        <a href="/" class="tab {{if eq .Active "account"}}active{{end}}">{{icon "user"}}My account</a>
+        {{if .IsAdmin}}
+        <a href="/admin" class="tab {{if eq .Active "admin"}}active{{end}}">{{icon "settings"}}Admin</a>
+        {{if .ConfigEditorEnabled}}
+        <a href="/admin/config" class="tab {{if eq .Active "config"}}active{{end}}">{{icon "file"}}Config editor</a>
+        {{else}}
+        <span class="tab disabled" title="Config editor is disabled">{{icon "file"}}Config editor</span>
+        {{end}}
+        {{end}}
+        <a href="/logout" class="tab logout-tab">{{icon "logout"}}Log out</a>
+      </div>
+      <div class="card-body">
+        {{template "content" .}}
+      </div>
+    </div>
+  </div>
+  <script src="/static/secure-guard.js"></script>
+  <script src="/static/boot.js"></script>
+</body>
+</html>
+{{end}}

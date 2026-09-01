@@ -212,6 +212,72 @@ func LoadIdentity(dir string) (*identity.Snapshot, error) {
 	}, nil
 }
 
+// IdentityFile is one recognized declarative config file found by
+// ListIdentityFiles.
+type IdentityFile struct {
+	// Path is relative to the identity directory, with forward slashes
+	// regardless of OS -- suitable for both display and round-tripping
+	// back into ResolveIdentityFile.
+	Path string
+	// Kind is "UserList", "GroupList", or "OIDCClientList".
+	Kind string
+}
+
+// ListIdentityFiles walks dir exactly like LoadIdentity does and returns
+// every file that LoadIdentity would actually fold into the Snapshot --
+// same recursive discovery, same apiVersion/kind header check -- so
+// callers like the admin config editor show precisely "the files this
+// server is reading", not a hardcoded users.yaml/groups.yaml/
+// oidc-clients.yaml list that stops matching reality the moment someone
+// splits or renames a file. Order is stable (sorted by path) across calls.
+func ListIdentityFiles(dir string) ([]IdentityFile, error) {
+	files, err := yamlFilesUnder(dir)
+	if err != nil {
+		return nil, err
+	}
+	var out []IdentityFile
+	for _, f := range files {
+		b, err := os.ReadFile(f)
+		if err != nil {
+			return nil, fmt.Errorf("reading %s: %w", f, err)
+		}
+		var hdr fileHeader
+		if err := yaml.Unmarshal(b, &hdr); err != nil {
+			continue
+		}
+		if hdr.APIVersion != configAPIVersion {
+			continue
+		}
+		switch hdr.Kind {
+		case "GroupList", "UserList", "OIDCClientList":
+		default:
+			continue
+		}
+		rel, err := filepath.Rel(dir, f)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, IdentityFile{Path: filepath.ToSlash(rel), Kind: hdr.Kind})
+	}
+	return out, nil
+}
+
+// ResolveIdentityFile validates that relPath (as returned by
+// ListIdentityFiles, or typed by an operator into the admin config editor)
+// actually resolves to a path inside dir, and returns that absolute path.
+// Without this check, a crafted relPath like "../../etc/something" could
+// read or write outside the identity directory entirely.
+func ResolveIdentityFile(dir, relPath string) (string, error) {
+	if relPath == "" {
+		return "", fmt.Errorf("empty file path")
+	}
+	cleaned := filepath.Clean(filepath.FromSlash(relPath))
+	if filepath.IsAbs(cleaned) || cleaned == ".." || strings.HasPrefix(cleaned, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("invalid file path %q", relPath)
+	}
+	return filepath.Join(dir, cleaned), nil
+}
+
 // resolvePasswordHash resolves a UserSpec's PasswordHash/PasswordHashFile
 // into the hash string identity.User.PasswordHash should carry, plus the
 // raw bytes actually read for it. Those raw bytes get folded into the
