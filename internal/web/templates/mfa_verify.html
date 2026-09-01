@@ -1,6 +1,6 @@
 {{define "content"}}
-{{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-<p>We've emailed you a 6-digit verification code. Enter it below to finish logging in.</p>
+{{if .Error}}<p class="error">{{icon "warning"}}{{.Error}}</p>{{end}}
+<p class="muted">We've emailed you a 6-digit verification code. Enter it below to finish logging in.</p>
 <form method="post" action="/login/mfa">
   <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
   <label>Verification code

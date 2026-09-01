@@ -1,86 +1,365 @@
+/* Shared stylesheet for both the public web pages and the /admin UI --
+   one set of design tokens and components instead of the two independently
+   drifting stylesheets this used to be split across. */
+/* Every color used anywhere below is one of these tokens (or `currentColor`,
+   which just inherits whichever token is already in effect) -- there should
+   be no hardcoded hex/rgb color outside this block and its dark-mode
+   override. Several tokens (--link, --button-bg, --node-*, ...) are
+   deliberately aliases of a smaller set of "real" colors (--accent,
+   --accent-soft, ...) so a palette change only has one place to edit per
+   color, not one per place it's used. */
 :root {
   --bg: #f4f5f7;
   --card-bg: #fff;
   --text: #1f2933;
   --muted: #6b7280;
-  --border: #d1d5db;
-  --link: #2563eb;
-  --button-bg: #2563eb;
-  --button-bg-hover: #1d4ed8;
+  --border: #e2e4e9;
+
+  --accent: #4f46e5;
+  --accent-hover: #4338ca;
+  --accent-soft: #eef2ff;
+  --link: var(--accent);
+  --button-bg: var(--accent);
+  --button-bg-hover: var(--accent-hover);
   --button-text: #fff;
+
   --error: #b91c1c;
+  --error-soft: #fef2f2;
+  /* A solid button fill, as opposed to --error itself which is tuned to
+     read as text against --bg/--card-bg -- in dark mode those are two
+     different colors (see below) because a *light* error red works as
+     text-on-dark but fails contrast as a fill behind white button text. */
+  --error-button-bg: var(--error);
+  --success: #15803d;
+  --success-soft: #f0fdf4;
   --meter-track: #e5e7eb;
+  /* Password-strength meter scale (weakest to strongest); read from JS via
+     getComputedStyle instead of a second hardcoded copy -- see strength.js. */
+  --meter-weak: var(--error);
+  --meter-fair: #d97706;
+  --meter-good: #65a30d;
+  --meter-strong: var(--success);
+
+  --node-fill: var(--accent-soft);
+  --node-stroke: var(--accent);
+  --edge-stroke: #a5adba;
+  /* Groups that force MFA on their members get the red/error family
+     instead of the default accent -- same "security-relevant, worth
+     standing out" reasoning as the logout tab above. */
+  --node-mfa-fill: var(--error-soft);
+  --node-mfa-stroke: var(--error);
+
+  /* The toggle-switch thumb stays light in both themes (it sits on a
+     colored/neutral track either way), so unlike most tokens here it isn't
+     redefined in the dark-mode block below -- see the "not aliased"
+     comment further down for the same pattern with --button-bg. */
+  --switch-thumb: #fff;
+
+  --radius: 10px;
+  --shadow: 0 1px 2px rgba(16, 24, 40, 0.06), 0 1px 3px rgba(16, 24, 40, 0.08);
 }
 
-/* Follows the OS/browser "prefers-color-scheme" setting automatically --
-   no toggle, no JS, no stored preference: whatever the device already says
-   is what it gets. */
 @media (prefers-color-scheme: dark) {
   :root {
-    --bg: #111827;
-    --card-bg: #1f2937;
+    --bg: #0f1117;
+    --card-bg: #1a1d27;
     --text: #e5e7eb;
-    --muted: #9ca3af;
-    --border: #374151;
-    --link: #60a5fa;
-    --button-bg: #2563eb;
-    --button-bg-hover: #3b82f6;
+    --muted: #9099ab;
+    --border: #2a2d3a;
+
+    --accent: #818cf8;
+    --accent-hover: #a5b4fc;
+    --accent-soft: #1e2140;
+    --link: var(--accent);
+    /* Not aliased to --accent: buttons keep the same punchy brand indigo in
+       both themes (white text always contrasts fine against it), while
+       --accent itself lightens in dark mode because *it's* used for text/
+       links that need to contrast against --bg instead. */
+    --button-bg: #4f46e5;
+    --button-bg-hover: #6366f1;
     --button-text: #fff;
+
     --error: #f87171;
-    --meter-track: #374151;
+    --error-soft: #2a1618;
+    --error-button-bg: #dc2626;
+    --success: #4ade80;
+    --success-soft: #142218;
+    --meter-track: #2a2d3a;
+    --meter-weak: var(--error);
+    --meter-fair: #f59e0b;
+    --meter-good: #84cc16;
+    --meter-strong: var(--success);
+
+    --node-fill: var(--accent-soft);
+    --node-stroke: var(--accent);
+    --edge-stroke: #565c73;
+
+    --shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   }
 }
 
+* { box-sizing: border-box; }
 body {
-  font-family: system-ui, sans-serif;
+  font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
   background: var(--bg);
   color: var(--text);
+  margin: 0;
+}
+a { color: var(--link); text-decoration: none; }
+a:hover { text-decoration: underline; }
+h1 { font-size: 1.4rem; margin: 0; }
+h2 { font-size: 1.05rem; margin: 1.75rem 0 0.75rem; }
+h2:first-child { margin-top: 0; }
+p { line-height: 1.5; }
+
+/* A toggle switch to the left of its section's heading, with the current
+   status shown as a subtitle under the heading instead of as text next to
+   the switch (see the MFA toggle). The row carries the h2's usual margin
+   so the heading inside can be zeroed out without losing that spacing. */
+.mfa-row { display: flex; align-items: center; gap: 0.85rem; margin: 1.75rem 0 0.75rem; }
+.mfa-row:first-child { margin-top: 0; }
+.mfa-row h2 { margin: 0; }
+.mfa-row .muted { margin: 0.15rem 0 0; }
+
+svg.icon, nav svg { width: 18px; height: 18px; flex: none; }
+
+/* ---- Public web pages: a single centered card ---- */
+body.web-page {
   display: flex;
   justify-content: center;
-  padding-top: 10vh;
+  align-items: flex-start;
+  padding-top: 8vh;
+  min-height: 100vh;
 }
 .card {
   background: var(--card-bg);
-  border-radius: 8px;
-  box-shadow: 0 1px 4px rgba(0,0,0,0.1);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   padding: 2rem;
-  width: 320px;
 }
-h1 { font-size: 1.25rem; margin-top: 0; }
-label { display: block; margin-bottom: 1rem; font-size: 0.9rem; }
-input {
+body.web-page .card { width: min(420px, 92vw); }
+.web-page .card h1 { margin-bottom: 0; }
+
+/* Title row with room for an action on the far right (e.g. the "Log out"
+   button on the account page) -- plain h1 when a page has nothing to put
+   there, since .page-title just falls back to a single flex child. */
+.page-title { display: flex; align-items: center; justify-content: space-between; gap: 1rem; margin-bottom: 1.25rem; }
+.page-title h1 { margin-bottom: 0; }
+
+label { display: block; margin-bottom: 0.85rem; font-size: 0.85rem; color: var(--muted); }
+label > span, label > strong { color: var(--text); }
+input[type=text], input[type=email], input[type=password], textarea {
   display: block;
   width: 100%;
-  padding: 0.5rem;
-  margin-top: 0.25rem;
+  padding: 0.4rem 0.55rem;
+  margin-top: 0.3rem;
   box-sizing: border-box;
-  background: var(--card-bg);
+  background: var(--bg);
   color: var(--text);
   border: 1px solid var(--border);
-  border-radius: 4px;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  line-height: 1.3;
 }
-button { width: 100%; padding: 0.6rem; background: var(--button-bg); color: var(--button-text); border: none; border-radius: 4px; cursor: pointer; }
-button:hover { background: var(--button-bg-hover); }
-.error { color: var(--error); font-size: 0.9rem; }
-a { color: var(--link); }
+input:focus, textarea:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+textarea { font-family: ui-monospace, "SF Mono", Consolas, monospace; min-height: 520px; }
 
-.strength-meter {
-  height: 6px;
-  background: var(--meter-track);
-  border-radius: 3px;
-  margin-top: -0.5rem;
-  margin-bottom: 0.25rem;
+/* Toggle switch -- a <button type=submit> styled as an on/off slider
+   rather than a real checkbox, since flipping it always means submitting
+   a form to the server (see home.html's MFA toggle); .on/.off just pick
+   which side the thumb sits on and whether the track is accent-colored. */
+.switch { background: none; border: none; padding: 0; gap: 0.6rem; font-weight: 400; color: var(--text); }
+.switch:hover { background: none; }
+.switch-track { position: relative; width: 38px; height: 22px; border-radius: 999px; background: var(--border); flex: none; transition: background 0.15s ease; }
+.switch.on .switch-track { background: var(--accent); }
+.switch-thumb { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: var(--switch-thumb); box-shadow: var(--shadow); transition: left 0.15s ease; }
+.switch.on .switch-thumb { left: 18px; }
+/* Locked "on" by policy rather than the user's own choice -- still shows
+   the real (on) state instead of hiding the control, but it's inert. */
+.switch:disabled { cursor: not-allowed; opacity: 0.75; }
+
+/* Two form elements sharing one row: the field grows, the button/action
+   next to it hugs its own content instead of stretching full-width like a
+   lone form button does (see "form > button" below) -- used for the email
+   test's address field + send button, and the config editor's save +
+   download actions. */
+.field-row, .button-row { display: flex; gap: 0.5rem; align-items: flex-end; }
+.field-row > label { flex: 1; margin-bottom: 0; }
+.field-row > button, .button-row > button, .button-row > .btn { flex: none; width: auto; white-space: nowrap; }
+
+button.small, .btn.small { padding: 0.3rem 0.55rem; font-size: 0.8rem; }
+/* Hover-only warning color for a destructive-but-not-scary action (removing
+   one passkey) -- stays a normal secondary button until you're actually
+   about to click it, then lights up the same way the primary button does
+   on hover (solid fill, not just a tinted background) but red instead of
+   accent-colored, with --button-text kept on top for contrast. Uses
+   --error-button-bg rather than --error itself -- see that token's
+   comment for why they have to differ in dark mode. Selector is
+   .secondary.danger (compound), not just .danger, because it's always
+   paired with .secondary in markup and needs to outrank
+   "button.secondary:hover" below -- same specificity plus later source
+   order would otherwise let that rule win and the background would never
+   actually turn red. */
+button.secondary.danger:hover, .btn.secondary.danger:hover { background: var(--error-button-bg); color: var(--button-text); border-color: var(--error-button-bg); }
+
+button, .btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.55rem 1rem;
+  background: var(--button-bg);
+  color: var(--button-text);
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 500;
+}
+button:hover, .btn:hover { background: var(--button-bg-hover); text-decoration: none; }
+button.secondary, .btn.secondary { background: transparent; color: var(--text); border: 1px solid var(--border); }
+/* A bare background tint alone (the previous hover state) was too subtle
+   to register as "hovering an interactive button" -- now the border and
+   text switch to --accent too, on top of the tinted fill, so the whole
+   button visibly commits to the accent color instead of just gaining a
+   faint background wash. */
+button.secondary:hover, .btn.secondary:hover { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+form > button, form > .btn { width: 100%; justify-content: center; }
+
+.error, .success {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  margin: 0 0 1rem;
+}
+.error { color: var(--error); background: var(--error-soft); }
+.success { color: var(--success); background: var(--success-soft); }
+.error svg, .success svg { flex: none; }
+
+.muted { color: var(--muted); font-size: 0.85rem; }
+
+.divider { display: flex; align-items: center; gap: 0.75rem; margin: 1.25rem 0; color: var(--muted); font-size: 0.8rem; }
+.divider::before, .divider::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+
+table { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+th, td { text-align: left; padding: 0.5rem 0.4rem; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 500; }
+
+.strength-meter { height: 6px; background: var(--meter-track); border-radius: 3px; margin-top: -0.5rem; margin-bottom: 0.25rem; overflow: hidden; }
+.strength-meter-bar { height: 100%; width: 0; background: var(--meter-track); transition: width 0.15s ease, background 0.15s ease; }
+.strength-label { font-size: 0.8rem; color: var(--muted); margin: 0 0 1rem; min-height: 1em; }
+
+/* ---- App shell: shared by the account page and every /admin page ----
+   One layout (this) and one nav model (the tab bar below) for the whole
+   post-login app, not a narrow auth-style card on one side and a wide
+   admin-style block on the other -- switching between "My account" and
+   "Admin" used to visibly resize/reflow the page because they were built
+   on two different containers; now they're the same container. The tabs
+   themselves are the card's header (see .tabbed-card) rather than a
+   separate title bar sitting above it, so there's no second heading row
+   to keep in sync between pages either. */
+.app-shell { max-width: 900px; margin: 0 auto; padding: 2.5rem 1.5rem; }
+
+.tabbed-card {
+  background: var(--card-bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
   overflow: hidden;
 }
-.strength-meter-bar {
-  height: 100%;
-  width: 0;
-  background: var(--meter-track);
-  transition: width 0.15s ease, background 0.15s ease;
-}
-.strength-label {
-  font-size: 0.8rem;
+.tabbed-card .card-body { padding: 2rem; }
+
+.tabs { display: flex; align-items: center; gap: 0.25rem; padding: 0 1.5rem; border-bottom: 1px solid var(--border); }
+.tabs .tab {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.85rem;
   color: var(--muted);
-  margin: 0 0 1rem;
-  min-height: 1em;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  font-size: 0.9rem;
 }
+.tabs .tab:hover { color: var(--text); text-decoration: none; }
+.tabs .tab.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; }
+.tabs .tab.disabled { color: var(--muted); opacity: 0.55; cursor: default; }
+.tabs .tab.disabled:hover { text-decoration: none; }
+/* Pushed to the far right of the same row via margin-left:auto instead of
+   a separate title-row action slot -- see the layout templates. It's given
+   --error (rather than --muted like the other tabs) so it reads as a
+   distinct, deliberate action instead of blending into the section tabs --
+   the same token already used for destructive/warning states elsewhere,
+   not a one-off color. */
+.tabs .logout-tab { margin-left: auto; color: var(--error); }
+.tabs .logout-tab:hover { color: var(--error); border-bottom-color: var(--error); }
+
+/* Discovered config files as pill/chip-shaped selectors -- fully rounded
+   ends (border-radius: 999px, not the app's usual 6-10px) and a visible
+   gap between each chip instead of the plain-text-link look tabs
+   elsewhere use. Colored with the same --accent family every other
+   button/chip in the app uses (soft accent tint at rest, solid --button-bg
+   fill once active/hovered) rather than a neutral gray pill that only
+   turns accent-colored on interaction -- so it reads as "a button" from
+   the start, consistent with the rest of the UI. */
+.editor-files { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.25rem; font-size: 0.85rem; }
+.editor-files a {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.9rem;
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.editor-files a:hover { background: var(--button-bg-hover); color: var(--button-text); text-decoration: none; }
+.editor-files a.active { background: var(--button-bg); color: var(--button-text); font-weight: 600; }
+.editor-files a.active:hover { background: var(--button-bg-hover); }
+
+/* ---- Group graph ---- */
+.group-node { fill: var(--node-fill); stroke: var(--node-stroke); stroke-width: 1.25; }
+/* A group with requireMFA: true -- see graph.go's nodeClass selection. */
+.group-node-mfa { fill: var(--node-mfa-fill); stroke: var(--node-mfa-stroke); stroke-width: 1.25; }
+.group-edge { fill: none; stroke: var(--edge-stroke); stroke-width: 1.5; transition: stroke 0.1s ease, stroke-width 0.1s ease; }
+.group-edge-arrow { fill: var(--edge-stroke); }
+/* Direct links of a hovered/focused node -- see admin_home.html's
+   setEdgeHighlight. -active is a second <marker> (not just a class) since
+   an SVG marker is referenced by id and doesn't inherit the path's own
+   class/color. */
+.group-edge-active { stroke: var(--accent); stroke-width: 2.5; }
+.group-edge-arrow-active { fill: var(--accent); }
+.group-label { font-size: 12px; font-family: inherit; fill: var(--text); }
+.group-count { font-size: 10px; font-family: inherit; fill: var(--muted); }
+.graph-wrap { overflow: auto; border: 1px solid var(--border); border-radius: var(--radius); background: var(--card-bg); }
+
+/* Each node is a <g class="group-node-hit"> wrapping its rect+text (see
+   graph.go) -- clicking it opens .group-detail below with that group's
+   members and inheritance. */
+.group-node-hit { cursor: pointer; }
+.group-node-hit:hover .group-node, .group-node-hit:focus .group-node,
+.group-node-hit:hover .group-node-mfa, .group-node-hit:focus .group-node-mfa { stroke-width: 2.5; }
+.group-node-hit:focus { outline: none; }
+
+.group-detail { margin-top: 1.25rem; padding-top: 1.25rem; border-top: 1px solid var(--border); }
+.group-detail-header { display: flex; align-items: center; gap: 0.75rem; }
+.group-detail-header h3 { margin: 0; font-size: 1rem; flex: 1; }
+.badge-mfa { display: inline-flex; align-items: center; gap: 0.3rem; padding: 0.2rem 0.65rem; border-radius: 999px; background: var(--node-mfa-fill); color: var(--node-mfa-stroke); font-size: 0.75rem; font-weight: 600; }
+/* Without this, the badge's own `display: inline-flex` above (a class
+   selector) outranks the UA stylesheet's plain `[hidden] { display: none }`
+   (an attribute selector), so toggling the `hidden` property from JS did
+   nothing and the badge showed on every group regardless of requireMFA. */
+.badge-mfa[hidden] { display: none; }
+.badge-mfa svg { width: 13px; height: 13px; }
+
+#gd-body h4 { font-size: 0.8rem; color: var(--muted); margin: 1.1rem 0 0.4rem; text-transform: uppercase; letter-spacing: 0.03em; }
+#gd-body h4:first-child { margin-top: 0; }
+.gd-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.35rem; font-size: 0.85rem; }
+
+.chip { display: inline-flex; align-items: center; padding: 0.15rem 0.65rem; border-radius: 999px; background: var(--accent-soft); color: var(--accent); font-size: 0.8rem; }
+.chip[data-group] { cursor: pointer; }
+.chip[data-group]:hover { background: var(--accent); color: var(--button-text); }
+.chip-user { background: var(--bg); color: var(--text); border: 1px solid var(--border); }
+.chip-target { background: var(--accent); color: var(--button-text); font-weight: 600; }
+.chip-arrow { color: var(--muted); margin: 0 0.15rem; font-size: 0.8rem; }
