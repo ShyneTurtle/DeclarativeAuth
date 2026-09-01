@@ -1,43 +1,49 @@
 {{define "content"}}
-<div class="card">
-  <p>Editing <strong>{{.FileName}}</strong>. Changes are validated live and only written to disk on Save
-     (which triggers the normal hot-reload watcher, same as any other file write).</p>
-  <p>
-    <a href="/admin/config/users">users.yaml</a> |
-    <a href="/admin/config/groups">groups.yaml</a> |
-    <a href="/admin/config/oidc-clients">oidc-clients.yaml</a> |
-    <a href="/admin/config/{{.FileKey}}/download">Download</a>
-  </p>
-  {{if .Error}}<p class="error">{{.Error}}</p>{{end}}
-  {{if .Success}}<p class="success">Saved.</p>{{end}}
-  <form method="post" action="/admin/config/{{.FileKey}}/save" id="editor-form">
-    <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
-    <textarea name="content" id="content">{{.Content}}</textarea>
-    <p id="validation-status"></p>
-    <button type="submit">Save</button>
-  </form>
-  <script>
-    // Minimal live-validation: debounced POST to /admin/config/validate as
-    // the operator types. No editor framework is vendored (kept lightweight);
-    // this is a plain textarea with server-side validation feedback.
-    const textarea = document.getElementById('content');
-    const status = document.getElementById('validation-status');
-    const fileKey = {{.FileKeyJS}};
-    let timer;
-    textarea.addEventListener('input', () => {
-      clearTimeout(timer);
-      timer = setTimeout(async () => {
-        const resp = await fetch('/admin/config/validate', {
-          method: 'POST',
-          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
-          body: 'fileKey=' + encodeURIComponent(fileKey) + '&content=' + encodeURIComponent(textarea.value)
-                + '&csrf_token=' + encodeURIComponent({{.CSRFTokenJS}})
-        });
-        const data = await resp.json();
-        status.textContent = data.valid ? 'Valid.' : ('Invalid: ' + data.error);
-        status.className = data.valid ? 'success' : 'error';
-      }, 400);
-    });
-  </script>
+{{if .Files}}
+<div class="editor-files">
+  {{range .Files}}
+  <a href="/admin/config/edit/{{.Path}}" class="{{if eq .Path $.FilePath}}active{{end}}">{{icon "file"}}{{.Path}}</a>
+  {{end}}
 </div>
+{{end}}
+
+{{if not .FilePath}}
+<p class="muted">No declarative config files found under the identity directory.</p>
+{{else}}
+<p class="muted">Changes are validated live and only written to disk on Save.</p>
+<form method="post" action="/admin/config/save/{{.FilePath}}" id="editor-form">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <textarea name="content" id="content">{{.Content}}</textarea>
+  <p id="validation-status"></p>
+  <div class="button-row">
+    <button type="submit">{{icon "save"}}Save</button>
+    <a href="/admin/config/download/{{.FilePath}}" class="btn secondary">{{icon "download"}}Download</a>
+  </div>
+  {{if .Error}}<p class="error">{{icon "warning"}}{{.Error}}</p>{{end}}
+  {{if .Success}}<p class="success">{{icon "check"}}Saved.</p>{{end}}
+</form>
+<script>
+  // Minimal live-validation: debounced POST to /admin/config/validate as
+  // the operator types. No editor framework is vendored (kept lightweight);
+  // this is a plain textarea with server-side validation feedback.
+  const textarea = document.getElementById('content');
+  const status = document.getElementById('validation-status');
+  const filePath = {{.FilePathJS}};
+  let timer;
+  textarea.addEventListener('input', () => {
+    clearTimeout(timer);
+    timer = setTimeout(async () => {
+      const resp = await fetch('/admin/config/validate', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'file=' + encodeURIComponent(filePath) + '&content=' + encodeURIComponent(textarea.value)
+              + '&csrf_token=' + encodeURIComponent({{.CSRFTokenJS}})
+      });
+      const data = await resp.json();
+      status.textContent = data.valid ? 'Valid.' : ('Invalid: ' + data.error);
+      status.className = data.valid ? 'success' : 'error';
+    }, 400);
+  });
+</script>
+{{end}}
 {{end}}

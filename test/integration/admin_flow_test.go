@@ -202,7 +202,7 @@ func TestAdmin_ConfigEditor_DisabledByDefault404s(t *testing.T) {
 	client := &http.Client{Jar: jar}
 	loginAs(t, client, jar, issuer, "admin", "AdminSecret1!")
 
-	resp, err := client.Get(issuer + "/admin/config/users")
+	resp, err := client.Get(issuer + "/admin/config/edit/users.yaml")
 	if err != nil {
 		t.Fatalf("get config editor: %v", err)
 	}
@@ -218,12 +218,12 @@ func TestAdmin_ConfigEditor_ValidateAndSaveTriggersReload(t *testing.T) {
 	client := &http.Client{Jar: jar}
 	loginAs(t, client, jar, issuer, "admin", "AdminSecret1!")
 
-	resp, err := client.Get(issuer + "/admin/config/users")
+	resp, err := client.Get(issuer + "/admin/config/edit/users.yaml")
 	if err != nil {
 		t.Fatalf("get config editor: %v", err)
 	}
 	resp.Body.Close()
-	u, _ := url.Parse(issuer + "/admin/config/users")
+	u, _ := url.Parse(issuer + "/admin/config/edit/users.yaml")
 	var csrf string
 	for _, c := range jar.Cookies(u) {
 		if c.Name == "da_csrf" {
@@ -233,7 +233,7 @@ func TestAdmin_ConfigEditor_ValidateAndSaveTriggersReload(t *testing.T) {
 
 	invalidContent := "apiVersion: declarativeauth.io/v1\nkind: UserList\nusers:\n  - username: x\n    memberOfGroups: [nonexistent-group]\n"
 	resp, err = client.PostForm(issuer+"/admin/config/validate", url.Values{
-		"fileKey": {"users"}, "content": {invalidContent}, "csrf_token": {csrf},
+		"file": {"users.yaml"}, "content": {invalidContent}, "csrf_token": {csrf},
 	})
 	if err != nil {
 		t.Fatalf("validate: %v", err)
@@ -251,7 +251,7 @@ func TestAdmin_ConfigEditor_ValidateAndSaveTriggersReload(t *testing.T) {
 	}
 	newContent := string(validContent) + "  - username: newuser\n    email: newuser@example.com\n    enabled: true\n    memberOfGroups: []\n"
 
-	resp, err = client.PostForm(issuer+"/admin/config/users/save", url.Values{
+	resp, err = client.PostForm(issuer+"/admin/config/save/users.yaml", url.Values{
 		"content": {newContent}, "csrf_token": {csrf},
 	})
 	if err != nil {
