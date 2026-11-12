@@ -145,6 +145,26 @@ type ServerConfig struct {
 	TLS            TLSConfig
 	PasswordPolicy PasswordPolicyConfig
 	WebAuthn       WebAuthnConfig
+	TOTP           TOTPConfig
+	Verify         VerifyConfig
+}
+
+// VerifyConfig configures the credential-verification API: an HTTPS endpoint
+// for trusted internal services (e.g. the VPN) to check "password + optional
+// authenticator code" with MFA enforced, see internal/verifyapi.
+type VerifyConfig struct {
+	SecureListenAddr string
+	TLS              TLSListenerConfig
+	// CallerGroup is the group a caller's own account must belong to.
+	CallerGroup string
+}
+
+// TOTPConfig configures authenticator-app (TOTP) second factors. TOTP is
+// enabled by setting EncryptionKey (32 bytes, decoded from EnvTOTPEncryptionKey).
+type TOTPConfig struct {
+	EncryptionKey []byte
+	// Issuer is the label shown in the authenticator app.
+	Issuer string
 }
 
 type LoggingConfig struct {

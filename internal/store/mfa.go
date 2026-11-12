@@ -74,19 +74,31 @@ type EmailChallengeStore struct {
 type EmailChallenge struct {
 	Username string
 	ReturnTo string
+	// Stage is ChallengeStageVerify (login MFA step pending) or
+	// ChallengeStageEnroll (MFA step passed, authenticator enrolment pending).
+	Stage string
+	// EmailSent reports whether a code was actually emailed for this
+	// challenge (false while the user is still on the authenticator-app
+	// default).
+	EmailSent bool
 }
+
+const (
+	ChallengeStageVerify = "verify"
+	ChallengeStageEnroll = "enroll"
+)
 
 // Create stores a new challenge, self-cleaning already-expired rows first
 // (same housekeeping approach as WebAuthnCeremonyStore.Save) so this table
 // doesn't grow unbounded from abandoned login attempts.
-func (s *EmailChallengeStore) Create(ctx context.Context, id, username, codeHash, returnTo string, ttl time.Duration) error {
+func (s *EmailChallengeStore) Create(ctx context.Context, id, username, codeHash, returnTo, stage string, emailSent bool, ttl time.Duration) error {
 	if _, err := s.Pool.Exec(ctx, `DELETE FROM mfa_email_challenges WHERE expires_at < now()`); err != nil {
 		return err
 	}
 	_, err := s.Pool.Exec(ctx, `
-		INSERT INTO mfa_email_challenges (id, username, code_hash, return_to, expires_at)
-		VALUES ($1, $2, $3, $4, now() + $5)`,
-		id, username, codeHash, returnTo, ttl)
+		INSERT INTO mfa_email_challenges (id, username, code_hash, return_to, stage, email_sent, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now() + $7)`,
+		id, username, codeHash, returnTo, stage, emailSent, ttl)
 	return err
 }
 
@@ -108,9 +120,9 @@ func (s *EmailChallengeStore) Verify(ctx context.Context, id, codeHash string) (
 	var storedHash string
 	var attempts int
 	err = tx.QueryRow(ctx, `
-		SELECT username, code_hash, return_to, attempts FROM mfa_email_challenges
-		WHERE id = $1 AND consumed_at IS NULL AND expires_at > now()
-		FOR UPDATE`, id).Scan(&ch.Username, &storedHash, &ch.ReturnTo, &attempts)
+		SELECT username, code_hash, return_to, stage, email_sent, attempts FROM mfa_email_challenges
+		WHERE id = $1 AND stage = 'verify' AND consumed_at IS NULL AND expires_at > now()
+		FOR UPDATE`, id).Scan(&ch.Username, &storedHash, &ch.ReturnTo, &ch.Stage, &ch.EmailSent, &attempts)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrChallengeNotFound
 	}
@@ -140,14 +152,14 @@ func (s *EmailChallengeStore) Verify(ctx context.Context, id, codeHash string) (
 	return &ch, nil
 }
 
-// Peek returns the username/return_to for a still-live (not consumed,
-// not expired) challenge without checking a code or consuming it, for the
-// "resend code" action.
+// Peek returns a still-live (not consumed, not expired, not out of attempts)
+// challenge without checking a code or consuming it. Callers must check Stage.
 func (s *EmailChallengeStore) Peek(ctx context.Context, id string) (*EmailChallenge, error) {
 	var ch EmailChallenge
 	err := s.Pool.QueryRow(ctx, `
-		SELECT username, return_to FROM mfa_email_challenges
-		WHERE id = $1 AND consumed_at IS NULL AND expires_at > now()`, id).Scan(&ch.Username, &ch.ReturnTo)
+		SELECT username, return_to, stage, email_sent FROM mfa_email_challenges
+		WHERE id = $1 AND consumed_at IS NULL AND expires_at > now() AND attempts < $2`,
+		id, maxMFAAttempts).Scan(&ch.Username, &ch.ReturnTo, &ch.Stage, &ch.EmailSent)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, ErrChallengeNotFound
 	}
@@ -155,6 +167,19 @@ func (s *EmailChallengeStore) Peek(ctx context.Context, id string) (*EmailChalle
 		return nil, err
 	}
 	return &ch, nil
+}
+
+// RecordFailure counts a wrong code against a challenge's attempt budget,
+// for second factors verified outside Verify (the authenticator app).
+func (s *EmailChallengeStore) RecordFailure(ctx context.Context, id string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE mfa_email_challenges SET attempts = attempts + 1 WHERE id = $1`, id)
+	return err
+}
+
+// Consume marks a challenge used, so its cookie can't be replayed.
+func (s *EmailChallengeStore) Consume(ctx context.Context, id string) error {
+	_, err := s.Pool.Exec(ctx, `UPDATE mfa_email_challenges SET consumed_at = now() WHERE id = $1 AND consumed_at IS NULL`, id)
+	return err
 }
 
 // Delete removes a challenge outright, used when superseding it with a

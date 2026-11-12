@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"math/big"
 	"net/http"
+	"strings"
 	"time"
 
 	"declarativeauth/internal/auth"
@@ -34,33 +35,51 @@ func generateOTP() (string, error) {
 	return fmt.Sprintf("%06d", n.Int64()), nil
 }
 
-// startMFAChallenge generates and emails a fresh one-time code, persists
-// the challenge, and sets the pending-MFA cookie that ties subsequent
-// /login/mfa requests back to it. Called from handleLoginSubmit right
-// after a successful password check, and from MFAHandlers.handleResend.
+// startMFAChallenge persists the pending-MFA challenge for a user who just
+// passed the password check and sets the cookie tying /login/mfa requests to
+// it. A user with an authenticator app enrolled is not emailed: the app is
+// the default and they can ask for an emailed code on the verify page. Anyone
+// else gets a fresh emailed code right away. Called from handleLoginSubmit.
 func (h *Handlers) startMFAChallenge(w http.ResponseWriter, r *http.Request, secure bool, username, returnTo string) error {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	code, err := generateOTP()
-	if err != nil {
-		return err
-	}
 	id, err := randomToken(16)
 	if err != nil {
 		return err
 	}
 	ttl := mfaChallengeTTL(h.MFACodeTTL)
-	if err := h.MFAChallenges.Create(ctx, id, username, hashToken(code), returnTo, ttl); err != nil {
-		return err
-	}
 
-	target := h.Snapshot().Users[username]
-	if err := h.MFAMail.SendMFACode(target.Email, code); err != nil {
-		if h.Logger != nil {
-			h.Logger.Error("failed to send MFA code email", "component", "web", "username", username, "error", err)
+	enrolled := false
+	if h.TOTP != nil {
+		if enrolled, err = h.TOTP.IsEnrolled(ctx, username); err != nil {
+			return err
 		}
-		return err
+	}
+	if enrolled {
+		// Nothing is emailed, so the stored hash must simply never match.
+		never, err := randomToken(16)
+		if err != nil {
+			return err
+		}
+		if err := h.MFAChallenges.Create(ctx, id, username, hashToken(never), returnTo, store.ChallengeStageVerify, false, ttl); err != nil {
+			return err
+		}
+	} else {
+		code, err := generateOTP()
+		if err != nil {
+			return err
+		}
+		if err := h.MFAChallenges.Create(ctx, id, username, hashToken(code), returnTo, store.ChallengeStageVerify, true, ttl); err != nil {
+			return err
+		}
+		target := h.Snapshot().Users[username]
+		if err := h.MFAMail.SendMFACode(target.Email, code); err != nil {
+			if h.Logger != nil {
+				h.Logger.Error("failed to send MFA code email", "component", "web", "username", username, "error", err)
+			}
+			return err
+		}
 	}
 
 	http.SetCookie(w, &http.Cookie{
@@ -95,12 +114,20 @@ type MFAHandlers struct {
 	Audit          *store.AuditStore
 	CodeTTL        time.Duration
 	Logger         *slog.Logger
+
+	// TOTP, Policy and Issuer back the authenticator-app options: choosing it
+	// at the verify step, and the forced enrolment of users subject to MFA.
+	// TOTP nil disables both.
+	TOTP   *store.TOTPStore
+	Policy *auth.MFAPolicy
+	Issuer string
 }
 
 // RegisterRoutes mounts /login/mfa, /login/mfa/resend, and /account/mfa.
 func (h *MFAHandlers) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("/login/mfa", h.handleVerify)
 	mux.HandleFunc("/login/mfa/resend", h.handleResend)
+	mux.HandleFunc("/login/mfa/enroll", h.handleEnroll)
 	mux.HandleFunc("/account/mfa", h.handleSettings)
 }
 
@@ -108,18 +135,23 @@ type mfaVerifyPageData struct {
 	Title     string
 	CSRFToken string
 	Error     string
+	// HasTOTP: the user has an authenticator app, which the page offers.
+	HasTOTP bool
+	// EmailSent: a code was emailed, so the page says so and offers a resend
+	// rather than "email me a code".
+	EmailSent bool
 }
 
 func (h *MFAHandlers) handleVerify(w http.ResponseWriter, r *http.Request) {
 	secure := h.TrustedProxies.IsForwardedHTTPS(r)
 	switch r.Method {
 	case http.MethodGet:
-		if _, err := r.Cookie(mfaPendingCookieName); err != nil {
+		cookie, err := r.Cookie(mfaPendingCookieName)
+		if err != nil {
 			http.Redirect(w, r, "/login", http.StatusSeeOther)
 			return
 		}
-		csrf := IssueCSRFToken(w, r, secure)
-		render(w, mfaVerifyTmpl, mfaVerifyPageData{Title: "Verify your identity", CSRFToken: csrf})
+		h.renderVerify(w, r, secure, cookie.Value, "")
 	case http.MethodPost:
 		h.handleVerifySubmit(w, r, secure)
 	default:
@@ -138,39 +170,207 @@ func (h *MFAHandlers) handleVerifySubmit(w http.ResponseWriter, r *http.Request,
 		return
 	}
 
-	code := r.FormValue("code")
+	code := strings.TrimSpace(r.FormValue("code"))
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 
-	ch, err := h.Challenges.Verify(ctx, cookie.Value, hashToken(code))
-	if err != nil {
-		if errors.Is(err, store.ErrChallengeNotFound) {
-			clearMFAPendingCookie(w)
-			render(w, errorTmpl, errorPageData{Title: "Expired", Message: "This verification code has expired or is no longer valid. Please log in again."})
+	ch, err := h.Challenges.Peek(ctx, cookie.Value)
+	if err != nil || ch.Stage != store.ChallengeStageVerify {
+		clearMFAPendingCookie(w)
+		render(w, errorTmpl, errorPageData{Title: "Expired", Message: "This verification code has expired or is no longer valid. Please log in again."})
+		return
+	}
+
+	// Either factor satisfies the step: the authenticator app (single-use,
+	// replay-protected in TOTPStore.Verify) or the emailed code. Every miss
+	// burns the challenge's shared attempt budget.
+	method := ""
+	if h.TOTP != nil {
+		ok, err := h.TOTP.Verify(ctx, ch.Username, code)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
 			return
 		}
-		// store.ErrInvalidCode: challenge is still live, let them retry.
-		if h.Audit != nil {
-			if err := h.Audit.Write(ctx, store.AuditEvent{EventType: "oidc_login_mfa_failure", Detail: "invalid_code", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
-				h.Logger.Error("audit write failed", "component", "web", "event_type", "oidc_login_mfa_failure", "error", err)
+		if ok {
+			method = "totp"
+			if err := h.Challenges.Consume(ctx, cookie.Value); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
 			}
 		}
-		render(w, mfaVerifyTmpl, mfaVerifyPageData{Title: "Verify your identity", Error: "Incorrect code, please try again.", CSRFToken: IssueCSRFToken(w, r, secure)})
-		return
+	}
+	if method == "" {
+		if _, err := h.Challenges.Verify(ctx, cookie.Value, hashToken(code)); err != nil {
+			if errors.Is(err, store.ErrChallengeNotFound) {
+				clearMFAPendingCookie(w)
+				render(w, errorTmpl, errorPageData{Title: "Expired", Message: "This verification code has expired or is no longer valid. Please log in again."})
+				return
+			}
+			// store.ErrInvalidCode: challenge is still live, let them retry.
+			if h.Audit != nil {
+				if err := h.Audit.Write(ctx, store.AuditEvent{Username: ch.Username, EventType: "oidc_login_mfa_failure", Detail: "invalid_code", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+					h.Logger.Error("audit write failed", "component", "web", "event_type", "oidc_login_mfa_failure", "error", err)
+				}
+			}
+			h.renderVerify(w, r, secure, cookie.Value, "Incorrect code, please try again.")
+			return
+		}
+		method = "email"
 	}
 
 	clearMFAPendingCookie(w)
 	if h.Audit != nil {
-		if err := h.Audit.Write(ctx, store.AuditEvent{Username: ch.Username, EventType: "oidc_login_success", Detail: "mfa_verified", UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
+		if err := h.Audit.Write(ctx, store.AuditEvent{Username: ch.Username, EventType: "oidc_login_success", Detail: "mfa_verified:" + method, UserAgent: r.UserAgent()}); err != nil && h.Logger != nil {
 			h.Logger.Error("audit write failed", "component", "web", "event_type", "oidc_login_success", "error", err)
 		}
 	}
-	sourceIP := h.TrustedProxies.ClientIP(r).String()
-	if err := h.Sessions.Issue(ctx, w, ch.Username, r.UserAgent(), sourceIP); err != nil {
+	// Users subject to MFA must have an authenticator app: if they don't yet,
+	// the sign-in continues into enrolment instead of ending here. This runs
+	// only after the MFA step above passed, so a stolen password alone can't
+	// be used to enrol an attacker's app.
+	needs, err := h.needsEnrollment(ctx, ch.Username)
+	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}
-	http.Redirect(w, r, sanitizeReturnTo(ch.ReturnTo), http.StatusSeeOther)
+	if needs {
+		id, err := randomToken(16)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		never, err := randomToken(16)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		ttl := 15 * time.Minute
+		if err := h.Challenges.Create(ctx, id, ch.Username, hashToken(never), ch.ReturnTo, store.ChallengeStageEnroll, false, ttl); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		http.SetCookie(w, &http.Cookie{
+			Name: mfaPendingCookieName, Value: id, Path: "/",
+			HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode, MaxAge: int(ttl.Seconds()),
+		})
+		http.Redirect(w, r, "/login/mfa/enroll", http.StatusSeeOther)
+		return
+	}
+	h.finishLogin(w, r, ctx, ch.Username, ch.ReturnTo)
+}
+
+// needsEnrollment reports whether username is subject to MFA but has no
+// authenticator app yet (always false when TOTP isn't configured).
+func (h *MFAHandlers) needsEnrollment(ctx context.Context, username string) (bool, error) {
+	if h.TOTP == nil || h.Policy == nil {
+		return false, nil
+	}
+	required, err := h.Policy.Required(ctx, username)
+	if err != nil || !required {
+		return false, err
+	}
+	enrolled, err := h.TOTP.IsEnrolled(ctx, username)
+	return !enrolled, err
+}
+
+func (h *MFAHandlers) finishLogin(w http.ResponseWriter, r *http.Request, ctx context.Context, username, returnTo string) {
+	sourceIP := h.TrustedProxies.ClientIP(r).String()
+	if err := h.Sessions.Issue(ctx, w, username, r.UserAgent(), sourceIP); err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	http.Redirect(w, r, sanitizeReturnTo(returnTo), http.StatusSeeOther)
+}
+
+// renderVerify draws the verify page for a live challenge.
+func (h *MFAHandlers) renderVerify(w http.ResponseWriter, r *http.Request, secure bool, challengeID, errMsg string) {
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	ch, err := h.Challenges.Peek(ctx, challengeID)
+	if err != nil || ch.Stage != store.ChallengeStageVerify {
+		clearMFAPendingCookie(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	hasTOTP := false
+	if h.TOTP != nil {
+		if hasTOTP, err = h.TOTP.IsEnrolled(ctx, ch.Username); err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+	render(w, mfaVerifyTmpl, mfaVerifyPageData{
+		Title: "Verify your identity", CSRFToken: IssueCSRFToken(w, r, secure), Error: errMsg,
+		HasTOTP: hasTOTP, EmailSent: ch.EmailSent,
+	})
+}
+
+// handleEnroll is the forced-enrolment step of sign-in: shown only to a
+// holder of an 'enroll' challenge, i.e. someone who already passed MFA.
+func (h *MFAHandlers) handleEnroll(w http.ResponseWriter, r *http.Request) {
+	cookie, err := r.Cookie(mfaPendingCookieName)
+	if err != nil || cookie.Value == "" || h.TOTP == nil {
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+	defer cancel()
+	ch, err := h.Challenges.Peek(ctx, cookie.Value)
+	if err != nil || ch.Stage != store.ChallengeStageEnroll {
+		clearMFAPendingCookie(w)
+		http.Redirect(w, r, "/login", http.StatusSeeOther)
+		return
+	}
+
+	errMsg := ""
+	switch r.Method {
+	case http.MethodGet:
+	case http.MethodPost:
+		if !ValidCSRF(r) {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		err := h.TOTP.ConfirmEnrollment(ctx, ch.Username, strings.TrimSpace(r.FormValue("code")), time.Now())
+		if err == nil {
+			if err := h.Challenges.Consume(ctx, cookie.Value); err != nil {
+				http.Error(w, "internal error", http.StatusInternalServerError)
+				return
+			}
+			clearMFAPendingCookie(w)
+			if h.Audit != nil {
+				for _, ev := range []store.AuditEvent{
+					{Username: ch.Username, EventType: "totp_enrolled", Detail: "at_login", UserAgent: r.UserAgent()},
+					{Username: ch.Username, EventType: "oidc_login_success", Detail: "mfa_enrolled", UserAgent: r.UserAgent()},
+				} {
+					if err := h.Audit.Write(ctx, ev); err != nil && h.Logger != nil {
+						h.Logger.Error("audit write failed", "component", "web", "event_type", ev.EventType, "error", err)
+					}
+				}
+			}
+			h.finishLogin(w, r, ctx, ch.Username, ch.ReturnTo)
+			return
+		}
+		if !errors.Is(err, store.ErrInvalidTOTPCode) {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+		// Guessing at enrolment is bounded by the challenge's attempt budget.
+		_ = h.Challenges.RecordFailure(ctx, cookie.Value)
+		errMsg = "Incorrect code, please try again."
+	default:
+		w.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+
+	secret, err := h.TOTP.PendingSecret(ctx, ch.Username)
+	if err == nil && secret == nil {
+		secret, err = h.TOTP.BeginEnrollment(ctx, ch.Username)
+	}
+	if err != nil {
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	renderTOTPSetup(w, r, h.TrustedProxies, h.Issuer, ch.Username, secret, "/login/mfa/enroll", errMsg, true)
 }
 
 func (h *MFAHandlers) handleResend(w http.ResponseWriter, r *http.Request) {
@@ -192,7 +392,7 @@ func (h *MFAHandlers) handleResend(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 5*time.Second)
 	defer cancel()
 	ch, err := h.Challenges.Peek(ctx, cookie.Value)
-	if err != nil {
+	if err != nil || ch.Stage != store.ChallengeStageVerify {
 		clearMFAPendingCookie(w)
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
@@ -212,7 +412,7 @@ func (h *MFAHandlers) handleResend(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ttl := mfaChallengeTTL(h.CodeTTL)
-	if err := h.Challenges.Create(ctx, id, ch.Username, hashToken(code), ch.ReturnTo, ttl); err != nil {
+	if err := h.Challenges.Create(ctx, id, ch.Username, hashToken(code), ch.ReturnTo, store.ChallengeStageVerify, true, ttl); err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)
 		return
 	}

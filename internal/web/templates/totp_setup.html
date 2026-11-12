@@ -1,0 +1,15 @@
+{{define "content"}}
+{{if .Error}}<p class="error">{{icon "warning"}}{{.Error}}</p>{{end}}
+{{if .Required}}<p>Your account requires two-factor authentication with an authenticator app. Set one up to finish signing in.</p>{{end}}
+<p class="muted">Scan this QR code with an authenticator app (Aegis, FreeOTP, Google Authenticator, 1Password...), then enter the 6-digit code it shows to finish.</p>
+<p><img src="{{.QR}}" alt="QR code" width="224" height="224"></p>
+<p class="muted">Can't scan? Enter this key manually (time-based, 6 digits):<br><code>{{.Secret}}</code></p>
+<form method="post" action="{{.Action}}">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <label>Code
+    <input type="text" name="code" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" required autofocus>
+  </label>
+  <button type="submit">Confirm</button>
+</form>
+{{if not .Required}}<p><a href="/">Cancel</a></p>{{else}}<p><a href="/login">Cancel and go back to login</a></p>{{end}}
+{{end}}

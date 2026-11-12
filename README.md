@@ -47,6 +47,8 @@ This is a lightweight & secure alternative to hard to heavy (authentik), hard to
 - **SMTP-based password reset & MFA**: configurable minimum length & strength
   policy, group & per-user enforceable MFA (users can still opt in even when
   not enforced, but they can't opt out if they are).
+- **Authenticator-app (TOTP) second factor**: opt-in via
+  `DECLARATIVEAUTH_TOTP_ENCRYPTION_KEY`, see [Authenticator apps](#authenticator-apps-totp).
 - **Persisted brute-force backoff**, shared across LDAP and OIDC/web login,
   opt-in (disabled by default -- a hard lockout is itself a DoS lever; see
   `DECLARATIVEAUTH_RATE_LIMIT_THRESHOLD` in `examples/.env.example`).
@@ -310,6 +312,45 @@ Two independent layers, since neither can catch everything alone:
   misconfigured proxy, a typo'd link landing someone on plain HTTP -- not a
   substitute for actually running TLS; a network attacker who controls the
   connection can also tamper with the JavaScript itself.
+
+## Authenticator apps (TOTP)
+
+Email codes can't work for clients that have to check a login themselves and
+can't prompt through a browser -- a VPN, say. An authenticator app (TOTP,
+RFC 6238) gives those a second factor, and is also offered on the web login.
+
+Set `DECLARATIVEAUTH_TOTP_ENCRYPTION_KEY` (64 hex chars, e.g. `openssl rand -hex
+32`) to turn it on. Secrets are stored AES-256-GCM sealed and bound to the
+username; losing or changing the key invalidates every enrolment.
+
+**Web login.** Users with an authenticator app are asked for its code by
+default and nothing is emailed; "Email me a code instead" sends the usual
+emailed code, and either one signs in. Users subject to MFA (group
+`requireMFA`, per-user `mfaEnabled`, or self-enabled) who have no app yet are
+made to set one up during sign-in -- right after the emailed-code step, so a
+stolen password alone can't be used to enrol an attacker's app. Everyone else
+can add or replace theirs from the account page. Codes are single-use, and a
+wrong code counts against the same attempt budget as a wrong emailed one.
+
+**Verify API.** For trusted internal services that must check a login
+themselves, set `DECLARATIVEAUTH_VERIFY_SECURE_LISTEN_ADDR` to run an HTTPS
+endpoint (same TLS source as the other listeners):
+
+```
+POST /v1/verify          (HTTP Basic: the calling service's own account)
+{"username": "...", "password": "...", "code": "123456", "group": "vpn-users"}
+-> 200 {"ok": true, "username": "..."}
+-> 401/403 {"ok": false, "reason": "bad_password|mfa_code_missing|bad_totp|not_in_group|locked_out|..."}
+```
+
+It runs the same authentication as LDAP bind and the web login, so lockout and
+policy live in one place. `code` is only consulted for users subject to MFA,
+for whom a valid one is mandatory; `group`, if given, must contain the user.
+Reasons are for the caller's logs, not end users. Each caller authenticates
+with its own account, which must be in `DECLARATIVEAUTH_VERIFY_CALLER_GROUP`
+(default `credential-verifiers`) -- the endpoint is a password oracle, so give
+it a dedicated account and never publish it (no ingress, no public NAT). LDAP
+bind is unchanged and still takes a plain password.
 
 ## Samba integration
 

@@ -50,6 +50,10 @@ type Handlers struct {
 	MFAMail       *mail.Client
 	MFACodeTTL    time.Duration // defaults to 10 minutes if zero, see mfaChallengeTTL
 
+	// TOTP, if non-nil, enables the authenticator-app section of the home
+	// page (see TOTPHandlers).
+	TOTP *store.TOTPStore
+
 	// OnLoginResult is an optional metrics hook, called after every login
 	// attempt (mirrors ldapserver.Handler.OnBind so both protocols feed the
 	// same declarativeauth_login_attempts_total / _duration_seconds metrics
@@ -110,6 +114,8 @@ type homePageData struct {
 	Passkeys            []passkeyView
 	MFARequired         bool // declaratively required: the toggle below is hidden, not just disabled
 	MFASelfEnabled      bool
+	TOTPEnabled         bool // authenticator-app support is configured
+	TOTPEnrolled        bool
 	Error               string
 }
 
@@ -173,6 +179,16 @@ func (h *Handlers) handleHome(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	totpEnrolled := false
+	if h.TOTP != nil {
+		var err error
+		totpEnrolled, err = h.TOTP.IsEnrolled(r.Context(), username)
+		if err != nil {
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
+
 	render(w, homeTmpl, homePageData{
 		Title:               "My account",
 		Username:            username,
@@ -186,6 +202,8 @@ func (h *Handlers) handleHome(w http.ResponseWriter, r *http.Request) {
 		Passkeys:            views,
 		MFARequired:         mfaRequired,
 		MFASelfEnabled:      mfaSelfEnabled,
+		TOTPEnabled:         h.TOTP != nil,
+		TOTPEnrolled:        totpEnrolled,
 	})
 }
 

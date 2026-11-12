@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"declarativeauth/internal/totp"
 )
 
 // sambaDomainSIDPattern matches a Windows/Samba domain SID: "S-1-5-21-"
@@ -117,6 +119,24 @@ const (
 	EnvTLSKeyFile    = "DECLARATIVEAUTH_TLS_KEY_FILE"
 	EnvTLSMinVersion = "DECLARATIVEAUTH_TLS_MIN_VERSION"
 
+	// EnvTOTPEncryptionKey (64 hex chars = 32 bytes, e.g. `openssl rand -hex
+	// 32`) enables authenticator-app enrolment and seals the stored secrets.
+	// Losing or changing it invalidates every enrolment.
+	EnvTOTPEncryptionKey = "DECLARATIVEAUTH_TOTP_ENCRYPTION_KEY"
+	// EnvTOTPIssuer is the label shown in authenticator apps.
+	EnvTOTPIssuer = "DECLARATIVEAUTH_TOTP_ISSUER"
+
+	// EnvVerifySecureListenAddr enables the credential-verification API (HTTPS,
+	// see internal/verifyapi): POST /v1/verify checks a user's password and, for
+	// users subject to MFA, their authenticator-app code. Meant for trusted
+	// internal services only (a VPN), so expose it inside the cluster, never
+	// publicly. Each caller authenticates with its own account, which must be
+	// a member of EnvVerifyCallerGroup (default "credential-verifiers").
+	EnvVerifySecureListenAddr = "DECLARATIVEAUTH_VERIFY_SECURE_LISTEN_ADDR"
+	EnvVerifyCallerGroup      = "DECLARATIVEAUTH_VERIFY_CALLER_GROUP"
+	EnvVerifyTLSCertFile      = "DECLARATIVEAUTH_VERIFY_TLS_CERT_FILE"
+	EnvVerifyTLSKeyFile       = "DECLARATIVEAUTH_VERIFY_TLS_KEY_FILE"
+
 	EnvPasswordPolicyMinLength   = "DECLARATIVEAUTH_PASSWORD_POLICY_MIN_LENGTH"
 	EnvPasswordPolicyMinStrength = "DECLARATIVEAUTH_PASSWORD_POLICY_MIN_STRENGTH"
 
@@ -164,6 +184,13 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 			TLS: TLSListenerConfig{
 				CertFile: os.Getenv(EnvLDAPTLSCertFile),
 				KeyFile:  os.Getenv(EnvLDAPTLSKeyFile),
+			},
+		},
+		Verify: VerifyConfig{
+			SecureListenAddr: os.Getenv(EnvVerifySecureListenAddr),
+			TLS: TLSListenerConfig{
+				CertFile: os.Getenv(EnvVerifyTLSCertFile),
+				KeyFile:  os.Getenv(EnvVerifyTLSKeyFile),
 			},
 		},
 		OIDC: OIDCConfig{
@@ -217,6 +244,13 @@ func LoadServerConfigFromEnv() (*ServerConfig, error) {
 	if cfg.LDAP.RequireTLS, err = getenvBool(EnvLDAPRequireTLS, true); err != nil {
 		return nil, err
 	}
+	cfg.TOTP.Issuer = getenv(EnvTOTPIssuer, "DeclarativeAuth")
+	if k := os.Getenv(EnvTOTPEncryptionKey); k != "" {
+		if cfg.TOTP.EncryptionKey, err = totp.ParseKey(k); err != nil {
+			return nil, fmt.Errorf("%s: %w", EnvTOTPEncryptionKey, err)
+		}
+	}
+	cfg.Verify.CallerGroup = getenv(EnvVerifyCallerGroup, "credential-verifiers")
 	if cfg.LDAP.SambaReadersGroup != "" {
 		if cfg.LDAP.SambaDomainSID == "" || cfg.LDAP.SambaDomainName == "" {
 			return nil, fmt.Errorf("%s requires both %s and %s to be set", EnvLDAPSambaReadersGroup, EnvLDAPSambaDomainSID, EnvLDAPSambaDomainName)

@@ -19,6 +19,8 @@ import (
 	"declarativeauth/internal/metrics"
 	"declarativeauth/internal/oidcserver"
 	"declarativeauth/internal/store"
+	"declarativeauth/internal/totp"
+	"declarativeauth/internal/verifyapi"
 	"declarativeauth/internal/web"
 
 	"github.com/go-webauthn/webauthn/webauthn"
@@ -87,12 +89,28 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 	}
 
 	sessionStore := &store.SessionStore{Pool: pool}
+	mfaSettings := &store.UserMFASettingsStore{Pool: pool}
+	mfaPolicy := &auth.MFAPolicy{Snapshot: holder.Get, Settings: mfaSettings}
+	// Authenticator-app (TOTP) second factor; nil when no encryption key is
+	// configured, which also disables its enrolment UI and the MFA listener.
+	var totpStore *store.TOTPStore
+	if cfg.TOTP.EncryptionKey != nil {
+		totpCipher, err := totp.NewCipher(cfg.TOTP.EncryptionKey)
+		if err != nil {
+			return fmt.Errorf("totp: %w", err)
+		}
+		totpStore = &store.TOTPStore{Pool: pool, Cipher: totpCipher}
+	}
 	authenticator := &auth.Authenticator{
 		Snapshot:    holder.Get,
 		Credentials: &store.CredentialStore{Pool: pool},
 		Hasher:      &auth.Hasher{Params: auth.DefaultArgon2Params},
 		RateLimiter: loginRateLimiter,
 		Logger:      logger,
+		MFA:         mfaPolicy,
+	}
+	if totpStore != nil {
+		authenticator.TOTP = totpStore
 	}
 	auditStore := &store.AuditStore{Pool: pool}
 	hasher := &auth.Hasher{Params: auth.DefaultArgon2Params}
@@ -208,9 +226,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 		g.Go(func() error {
 			return maintainOIDCState(gctx, oidcKeys, oidcCodes, oidcRevocations, cfg.OIDC.SigningAlg, cfg.OIDC.KeyRotationInterval.Std(), cfg.OIDC.KeyOverlap.Std(), logger)
 		})
-		mfaSettings := &store.UserMFASettingsStore{Pool: pool}
 		mfaChallenges := &store.EmailChallengeStore{Pool: pool}
-		mfaPolicy := &auth.MFAPolicy{Snapshot: holder.Get, Settings: mfaSettings}
 		webHandlers := &web.Handlers{
 			Authenticator:       authenticator,
 			Sessions:            sessions,
@@ -222,6 +238,7 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			MFAPolicy:           mfaPolicy,
 			MFAChallenges:       mfaChallenges,
 			MFAMail:             mailClient,
+			TOTP:                totpStore,
 			OnLoginResult: func(success bool, d time.Duration) {
 				if reg == nil {
 					return
@@ -264,8 +281,23 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 			TrustedProxies: trustedProxies,
 			Audit:          auditStore,
 			Logger:         logger,
+			TOTP:           totpStore,
+			Policy:         mfaPolicy,
+			Issuer:         cfg.TOTP.Issuer,
 		}
 		mfaHandlers.RegisterRoutes(webMux)
+
+		if totpStore != nil {
+			(&web.TOTPHandlers{
+				Store:          totpStore,
+				Snapshot:       holder.Get,
+				Sessions:       sessions,
+				TrustedProxies: trustedProxies,
+				Audit:          auditStore,
+				Issuer:         cfg.TOTP.Issuer,
+				Logger:         logger,
+			}).RegisterRoutes(webMux)
+		}
 
 		if cfg.WebAuthn.Enabled {
 			if cfg.WebAuthn.RPID == "" || len(cfg.WebAuthn.RPOrigins) == 0 {
@@ -364,6 +396,27 @@ func Run(ctx context.Context, cfg *config.ServerConfig, holder *config.SnapshotH
 				return serveHTTPUntilDone(gctx, httpSrv, true, logger)
 			})
 		}
+	}
+
+	if cfg.Verify.SecureListenAddr != "" {
+		tlsCfg, err := buildTLSConfig(gctx, cfg.TLS, cfg.Verify.TLS, logger)
+		if err != nil {
+			return fmt.Errorf("verify API TLS: %w", err)
+		}
+		mux := http.NewServeMux()
+		(&verifyapi.Handler{
+			Authenticator: authenticator,
+			Snapshot:      holder.Get,
+			CallerGroup:   cfg.Verify.CallerGroup,
+			Audit:         auditStore,
+			Logger:        logger,
+		}).RegisterRoutes(mux)
+		httpSrv := &http.Server{Addr: cfg.Verify.SecureListenAddr, Handler: mux, TLSConfig: tlsCfg, ReadHeaderTimeout: 10 * time.Second}
+		addr := cfg.Verify.SecureListenAddr
+		g.Go(func() error {
+			logger.Info("verify API listener started", "component", "verifyapi", "addr", addr, "tls", true)
+			return serveHTTPUntilDone(gctx, httpSrv, true, logger)
+		})
 	}
 
 	if cfg.Metrics.ListenAddr != "" && reg != nil {

@@ -25,6 +25,10 @@ const (
 	ReasonDisabled     Reason = "disabled"
 	ReasonNoCredential Reason = "no_credential_set"
 	ReasonBadPassword  Reason = "bad_password"
+	// ReasonMFAMissing: MFA is required but the secret carried no code, or
+	// the user has no authenticator enrolled. ReasonBadTOTP: wrong/replayed code.
+	ReasonMFAMissing Reason = "mfa_code_missing"
+	ReasonBadTOTP    Reason = "bad_totp"
 )
 
 // AuthError carries the rejection reason for logging/audit purposes.
@@ -43,6 +47,16 @@ type Authenticator struct {
 	Hasher      *Hasher
 	RateLimiter *RateLimiter
 	Logger      *slog.Logger
+
+	// MFA and TOTP back AuthenticateWithCode only (plain Authenticate
+	// ignores them): the credential-verification API.
+	MFA  *MFAPolicy
+	TOTP TOTPVerifier
+}
+
+// TOTPVerifier checks a one-time code for a user, consuming it on success.
+type TOTPVerifier interface {
+	Verify(ctx context.Context, username, code string) (bool, error)
 }
 
 // Authenticate verifies an identifier (username or email) plus password
@@ -57,6 +71,71 @@ type Authenticator struct {
 // alternating between a user's username and email must not get separate
 // lockout budgets for each.
 func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, sourceIP string) (*Result, error) {
+	result, err := a.verifyPassword(ctx, identifier, password, sourceIP)
+	if err != nil {
+		return nil, err
+	}
+	if err := a.recordSuccess(ctx, result.Username, sourceIP); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+// AuthenticateWithCode is Authenticate for callers that can also carry a
+// one-time authenticator code (see internal/verifyapi). A user subject to MFA
+// (see MFAPolicy) must present a valid code from their authenticator app in
+// addition to their password; everyone else is authenticated exactly as by
+// Authenticate and any code is ignored. A wrong or missing code counts as a
+// login failure against the same lockout budget as a wrong password, and the
+// budget is only reset once both factors pass -- so guessing codes with a
+// known password is rate-limited.
+func (a *Authenticator) AuthenticateWithCode(ctx context.Context, identifier, password, code, sourceIP string) (*Result, error) {
+	username, known := a.Snapshot().ResolveIdentifier(identifier)
+	required := false
+	if known && a.MFA != nil {
+		var err error
+		if required, err = a.MFA.Required(ctx, username); err != nil {
+			return nil, err
+		}
+	}
+	if !required {
+		return a.Authenticate(ctx, identifier, password, sourceIP)
+	}
+
+	result, err := a.verifyPassword(ctx, identifier, password, sourceIP)
+	if err != nil {
+		return nil, err
+	}
+	if code == "" {
+		a.recordFailure(ctx, username, sourceIP)
+		return nil, &AuthError{Reason: ReasonMFAMissing}
+	}
+	good := false
+	if a.TOTP != nil {
+		if good, err = a.TOTP.Verify(ctx, username, code); err != nil {
+			return nil, err
+		}
+	}
+	if !good {
+		a.recordFailure(ctx, username, sourceIP)
+		return nil, &AuthError{Reason: ReasonBadTOTP}
+	}
+	if err := a.recordSuccess(ctx, result.Username, sourceIP); err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (a *Authenticator) recordSuccess(ctx context.Context, username, sourceIP string) error {
+	if a.RateLimiter == nil {
+		return nil
+	}
+	return a.RateLimiter.RecordSuccess(ctx, username, sourceIP)
+}
+
+// verifyPassword is the shared credential check: lockout, enabled flag and
+// password, recording failures but not resetting the lockout on success.
+func (a *Authenticator) verifyPassword(ctx context.Context, identifier, password, sourceIP string) (*Result, error) {
 	snap := a.Snapshot()
 	username, known := snap.ResolveIdentifier(identifier)
 
@@ -133,11 +212,6 @@ func (a *Authenticator) Authenticate(ctx context.Context, identifier, password, 
 		}
 	}
 
-	if a.RateLimiter != nil {
-		if err := a.RateLimiter.RecordSuccess(ctx, username, sourceIP); err != nil {
-			return nil, err
-		}
-	}
 	return &Result{Username: username, MustReset: mustReset}, nil
 }
 

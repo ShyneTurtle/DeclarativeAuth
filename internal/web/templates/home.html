@@ -19,6 +19,21 @@
   <input type="hidden" name="enabled" value="{{if .MFASelfEnabled}}false{{else}}true{{end}}">
 </form>
 
+{{if .TOTPEnabled}}
+<h2>{{icon "key"}} Authenticator app</h2>
+<p class="muted">{{if .TOTPEnrolled}}Set up. Needed, with your password, by services that ask for a code (e.g. the VPN).{{else}}Not set up yet. Required by services that ask for a code (e.g. the VPN) if two-factor authentication applies to you.{{end}}</p>
+<form method="post" action="/account/totp/setup">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <button type="submit" class="secondary">{{if .TOTPEnrolled}}Replace authenticator app{{else}}{{icon "plus"}}Set up authenticator app{{end}}</button>
+</form>
+{{if and .TOTPEnrolled (not .MFARequired)}}
+<form method="post" action="/account/totp/remove" onsubmit="return confirm('Remove your authenticator app?');">
+  <input type="hidden" name="csrf_token" value="{{.CSRFToken}}">
+  <button type="submit" class="secondary danger small">{{icon "trash"}}Remove</button>
+</form>
+{{end}}
+{{end}}
+
 {{if .PasskeysEnabled}}
 <h2>{{icon "key"}} Passkeys</h2>
 <p class="muted">Log in without a password using your device's fingerprint, face, security key, or password manager.</p>

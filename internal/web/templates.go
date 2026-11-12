@@ -44,4 +44,5 @@ var (
 	resetConfirmTmpl = mustParse("reset_confirm.html")
 	homeTmpl         = mustParseShell("home.html")
 	mfaVerifyTmpl    = mustParse("mfa_verify.html")
+	totpSetupTmpl    = mustParse("totp_setup.html")
 )

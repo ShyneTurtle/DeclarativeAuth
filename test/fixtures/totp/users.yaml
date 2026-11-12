@@ -1,0 +1,23 @@
+apiVersion: declarativeauth.io/v1
+kind: UserList
+users:
+  - username: svc
+    email: svc@example.com
+    enabled: true
+    memberOfGroups: [credential-verifiers]
+  - username: secure
+    email: secure@example.com
+    enabled: true
+    memberOfGroups: [secure-team, vpn-users]
+  - username: locky
+    email: locky@example.com
+    enabled: true
+    memberOfGroups: [secure-team, vpn-users]
+  - username: plain
+    email: plain@example.com
+    enabled: true
+    memberOfGroups: [vpn-users]
+  - username: outsider
+    email: outsider@example.com
+    enabled: true
+    memberOfGroups: []

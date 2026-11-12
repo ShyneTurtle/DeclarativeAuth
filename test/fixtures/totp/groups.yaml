@@ -1,0 +1,13 @@
+apiVersion: declarativeauth.io/v1
+kind: GroupList
+groups:
+  - name: secure-team
+    description: "Requires MFA for all members"
+    memberOfGroups: []
+    requireMFA: true
+  - name: vpn-users
+    description: "May use the VPN"
+    memberOfGroups: []
+  - name: credential-verifiers
+    description: "Services allowed to call the verify API"
+    memberOfGroups: []
